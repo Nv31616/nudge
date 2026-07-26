@@ -15,7 +15,11 @@
  *    exactly as it would see youtube.com.
  */
 
-import { createServer, type Server } from 'node:http';
+import { execFileSync } from 'node:child_process';
+import type { Server } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +29,7 @@ import {
   type BrowserContext,
   type Worker,
 } from '@playwright/test';
+import { DEFAULT_SETTINGS, SCHEMA_VERSION } from '../src/core/settingsSchema';
 import type { NudgeSettings, SiteRule } from '../src/core/settingsSchema';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -33,10 +38,89 @@ export const EXTENSION_PATH = path.resolve(here, '../.output/chrome-mv3');
 /** The storage key the extension persists settings under (see background/storage.ts). */
 const SETTINGS_KEY = 'nudge:settings';
 
+/**
+ * A YouTube-shaped page, served for the mapped youtube.com host.
+ *
+ * `?channel=UCxxxx&name=Foo` embeds a real `ytInitialPlayerResponse` so the extension's
+ * own detection runs against the shape it expects, this is what lets the channel features
+ * be tested end to end (real content script, real registered CSS, real service worker) with
+ * no network access at all.
+ */
+function youtubePage(url: URL): string {
+  const channelId = url.searchParams.get('channel') ?? '';
+  const name = url.searchParams.get('name') ?? 'Test Channel';
+  const videoId = url.searchParams.get('v') ?? '';
+  // `staleVideo` reproduces the SPA case: inline JSON pinned to a DIFFERENT video than the
+  // URL names, which is what YouTube actually serves after a client-side navigation.
+  const inlineVideoId = url.searchParams.get('staleVideo') ?? videoId;
+
+  const playerResponse =
+    channelId === ''
+      ? ''
+      : `<script>var ytInitialPlayerResponse = ${JSON.stringify({
+          videoDetails: { videoId: inlineVideoId, channelId, author: name, title: 'A video' },
+        })};</script>`;
+
+  // A real watch page also carries a channel byline in the DOM, which YouTube re-renders on
+  // every navigation, that is the tier the staleness guard falls through to.
+  const domChannelId = url.searchParams.get('domChannel') ?? channelId;
+  const byline =
+    domChannelId === ''
+      ? ''
+      : `<ytd-channel-name id="channel-name"><a class="yt-formatted-string" ` +
+        `href="/channel/${domChannelId}" aria-label="Go to channel ${name}">${name}</a>` +
+        `</ytd-channel-name>`;
+
+  return (
+    `<!doctype html><html><head><title>${name} - YouTube</title></head><body>` +
+    `<h1 id="host">www.youtube.com</h1><p id="path">${url.pathname}${url.search}</p>` +
+    playerResponse +
+    `<ytd-watch-flexy><div id="primary"><video id="player"></video>${byline}</div>` +
+    `<div id="secondary"><div id="related">recommendations</div></div></ytd-watch-flexy>` +
+    `<div id="comments"><div id="contents">comments</div></div>` +
+    `</body></html>`
+  );
+}
+
+/**
+ * A throwaway self-signed cert for the test server.
+ *
+ * Needed because youtube.com is in Chrome's HSTS PRELOAD list: `http://www.youtube.com/` is
+ * force-upgraded to HTTPS before it ever reaches our resolver rule, so a plain-HTTP fixture
+ * server answers with ERR_SSL_PROTOCOL_ERROR. Generated per-run into a temp dir rather than
+ * committed - a private key in a public repo is a bad habit even when it is worthless - and
+ * Chrome is launched with --ignore-certificate-errors so the cert never has to be trusted.
+ */
+function generateSelfSignedCert(): { key: Buffer; cert: Buffer } {
+  const dir = mkdtempSync(`${tmpdir()}/nudge-e2e-cert-`);
+  execFileSync(
+    'openssl',
+    [
+      'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', `${dir}/key.pem`,
+      '-out', `${dir}/cert.pem`,
+      '-days', '1',
+      '-subj', '/CN=localhost',
+      '-addext',
+      'subjectAltName=DNS:localhost,DNS:*.youtube.com,DNS:youtube.com,DNS:*.test,IP:127.0.0.1',
+    ],
+    { stdio: 'ignore' },
+  );
+  return { key: readFileSync(`${dir}/key.pem`), cert: readFileSync(`${dir}/cert.pem`) };
+}
+
 function startTestServer(): Promise<Server> {
-  const server = createServer((req, res) => {
+  const { key, cert } = generateSelfSignedCert();
+  const server = createHttpsServer({ key, cert }, (req, res) => {
     const host = (req.headers.host ?? 'unknown').split(':')[0]!;
+    const url = new URL(req.url ?? '/', `http://${host}`);
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+
+    if (host.endsWith('youtube.com')) {
+      res.end(youtubePage(url));
+      return;
+    }
+
     res.end(
       `<!doctype html><html><head><title>${host}</title></head>` +
         `<body><h1 id="host">${host}</h1><p id="path">${req.url}</p></body></html>`,
@@ -85,7 +169,9 @@ export const test = base.extend<ExtensionFixtures>({
         `--load-extension=${EXTENSION_PATH}`,
         // Any *.test hostname resolves to the local server, so page URLs stay clean
         // (`http://blocked.test/`) and domain matching is realistic.
-        `--host-resolver-rules=MAP *.test 127.0.0.1:${port}`,
+        // youtube.com is mapped too, so the YouTube content script (which only matches
+        // *.youtube.com) runs for real against a YouTube-shaped page, still zero network.
+        `--host-resolver-rules=MAP *.test 127.0.0.1:${port}, MAP *.youtube.com 127.0.0.1:${port}`,
         // Keep each browser's footprint small. The suite launches one persistent context
         // per test, and on a developer machine that is competing with a real browser for
         // memory; a bloated test browser gets OOM-killed and surfaces as the confusing
@@ -96,6 +182,8 @@ export const test = base.extend<ExtensionFixtures>({
         '--disable-features=Translate,MediaRouter,OptimizationHints',
         '--no-first-run',
         '--no-default-browser-check',
+        // The fixture server presents a throwaway self-signed cert (see above).
+        '--ignore-certificate-errors',
       ],
     });
 
@@ -119,7 +207,7 @@ export const test = base.extend<ExtensionFixtures>({
 
   siteUrl: async ({ context }, use) => {
     void context;
-    await use((host: string, pathname = '/') => `http://${host}${pathname}`);
+    await use((host: string, pathname = '/') => `https://${host}${pathname}`);
   },
 
   setSettings: async ({ serviceWorker }, use) => {
@@ -252,14 +340,15 @@ export async function sendFromExtensionPage<T>(
 /** A minimal valid settings object for tests to spread over. */
 export function baseSettings(overrides: Partial<NudgeSettings> = {}): Partial<NudgeSettings> {
   return {
-    schemaVersion: 1,
+    schemaVersion: SCHEMA_VERSION,
     globalEnabled: true,
     onboardingComplete: true,
     rules: [],
     messages: { delayTitles: [], delaySubtitles: [], hardBlockMessages: [] },
     strictMode: { enabled: false, challengeLength: 24 },
     emergencyPass: { enabled: true },
-    youtube: { shortsMode: 'INHERIT', hideShortsShelf: false, shortsDelaySeconds: 15 },
+    // Spread the REAL defaults so adding a settings field never breaks the whole suite.
+    youtube: { ...DEFAULT_SETTINGS.youtube },
     tempAllowMinutes: 10,
     ...overrides,
   };
