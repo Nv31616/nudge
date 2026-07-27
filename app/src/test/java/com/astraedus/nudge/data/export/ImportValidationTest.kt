@@ -135,6 +135,7 @@ class ImportValidationTest {
         assertNull(rule.autoKickAfter)
         assertEquals(false, rule.showTimeRemaining)
         assertEquals(60, rule.autoKickCooldownSeconds)
+        assertNull(rule.autoKickAfterMinutes)
     }
 
     @Test

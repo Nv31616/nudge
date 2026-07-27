@@ -19,7 +19,7 @@ import com.astraedus.nudge.data.db.entity.UsageEvent
         AppGroupMember::class,
         UsageEvent::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class NudgeDatabase : RoomDatabase() {
@@ -69,6 +69,13 @@ abstract class NudgeDatabase : RoomDatabase() {
         val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE block_rules ADD COLUMN webDomains TEXT DEFAULT NULL")
+            }
+        }
+
+        /** Time-based auto-kick threshold, in minutes of session foreground time (NULL = off). */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE block_rules ADD COLUMN autoKickAfterMinutes INTEGER DEFAULT NULL")
             }
         }
     }

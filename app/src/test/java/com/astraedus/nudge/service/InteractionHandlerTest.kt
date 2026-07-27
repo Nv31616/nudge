@@ -1,6 +1,5 @@
 package com.astraedus.nudge.service
 
-import android.content.Intent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.astraedus.nudge.domain.logging.NudgeLog
 import org.junit.Assert.assertEquals
@@ -18,7 +17,12 @@ class InteractionHandlerTest {
     private lateinit var timeRemainingHandler: FakeTimeRemainingHandler
     private lateinit var counterCache: CounterCacheRefresher
     private lateinit var handler: InteractionHandler
-    private val capturedIntents = mutableListOf<Intent>()
+
+    /**
+     * How many times the kick asked to send the user home. The Android "how" (global action, HOME
+     * intent) is injected by the service, so the policy under test stays JVM-pure.
+     */
+    private var goHomeCount = 0
 
     @Before
     fun setUp() {
@@ -27,7 +31,7 @@ class InteractionHandlerTest {
         inAppDetector = FakeInAppDetector()
         timeRemainingHandler = FakeTimeRemainingHandler()
         counterCache = CounterCacheRefresher()
-        capturedIntents.clear()
+        goHomeCount = 0
 
         handler = InteractionHandler(
             interactionTracker = tracker,
@@ -36,7 +40,13 @@ class InteractionHandlerTest {
             timeRemainingHandler = timeRemainingHandler,
             counterCache = counterCache,
             logger = NudgeLog.NoOp,
-            startActivity = { capturedIntents.add(it) }
+            autoKickExecutor = AutoKickExecutor(
+                interactionTracker = tracker,
+                counterOverlayManager = overlayManager,
+                counterCache = counterCache,
+                logger = NudgeLog.NoOp,
+                goHome = { goHomeCount++ }
+            )
         )
     }
 
@@ -45,9 +55,11 @@ class InteractionHandlerTest {
         autoKickAfter: Int? = null,
         showTimeRemaining: Boolean = false,
         dailyLimitMinutes: Int? = null,
-        autoKickCooldownSeconds: Int = 60
+        autoKickCooldownSeconds: Int = 60,
+        showCounter: Boolean = true
     ) {
         val entry = CounterCacheEntry(
+            showCounter = showCounter,
             autoKickAfter = autoKickAfter,
             showTimeRemaining = showTimeRemaining,
             dailyLimitMinutes = dailyLimitMinutes,
@@ -279,6 +291,80 @@ class InteractionHandlerTest {
 
         assertTrue(overlayManager.visible)
         assertEquals("taps", overlayManager.lastShowLabel)
+    }
+
+    // --- counter is gated on showCounter, not on cache membership ---
+
+    @Test
+    fun `a package tracked only for a time-based kick gets no counter overlay`() {
+        // Regression guard for the split between "this package is tracked" and "the user wants the
+        // counter". A time-based auto-kick puts a package in the cache with showCounter = false;
+        // if the interaction paths keyed off cache membership, enabling "kick after 30 minutes"
+        // would silently switch on a floating tap counter nobody asked for.
+        enablePackage("com.example.notes", showCounter = false, autoKickAfter = null)
+
+        handler.handleViewClicked("com.example.notes")
+        handler.handleContentChanged("com.example.notes")
+
+        assertEquals(0, tracker.getSessionCount("com.example.notes"))
+        assertFalse(overlayManager.visible)
+        assertNull(overlayManager.lastShowLabel)
+    }
+
+    @Test
+    fun `session bookkeeping still runs for a package without a counter`() {
+        // ...but the session boundary itself must still be tracked, because the time-based trigger
+        // depends on it.
+        enablePackage("com.example.notes", showCounter = false)
+
+        handler.onAppChanged("com.example.notes")
+        tracker.setSessionUsageBaseline("com.example.notes", 5_000L)
+        handler.onAppChanged("com.example.other")
+
+        assertFalse(overlayManager.visible)
+        assertEquals(5_000L, tracker.getSessionUsageBaseline("com.example.notes"))
+    }
+
+    // --- auto-kick goes through the shared executor ---
+
+    @Test
+    fun `interaction auto-kick sends home, arms the cooldown and resets the session`() {
+        enablePackage(
+            "com.example.notes",
+            autoKickAfter = 1,
+            autoKickCooldownSeconds = 90
+        )
+
+        handler.handleViewClicked("com.example.notes")
+
+        assertEquals(1, goHomeCount)
+        assertEquals(0, tracker.getSessionCount("com.example.notes"))
+        assertTrue(tracker.isInCooldown("com.example.notes"))
+        assertFalse(overlayManager.visible)
+    }
+
+    @Test
+    fun `interaction auto-kick with no cooldown configured arms none`() {
+        enablePackage(
+            "com.example.notes",
+            autoKickAfter = 1,
+            autoKickCooldownSeconds = 0
+        )
+
+        handler.handleViewClicked("com.example.notes")
+
+        assertEquals(1, goHomeCount)
+        assertFalse(tracker.isInCooldown("com.example.notes"))
+    }
+
+    @Test
+    fun `no auto-kick below the interaction threshold`() {
+        enablePackage("com.example.notes", autoKickAfter = 5)
+
+        handler.handleViewClicked("com.example.notes")
+
+        assertEquals(0, goHomeCount)
+        assertEquals(1, tracker.getSessionCount("com.example.notes"))
     }
 
     // --- hideCounter tests ---

@@ -94,7 +94,8 @@ class ImportRulesUseCase @Inject constructor(
                 autoKickAfter = exportedRule.autoKickAfter,
                 showTimeRemaining = exportedRule.showTimeRemaining,
                 autoKickCooldownSeconds = exportedRule.autoKickCooldownSeconds,
-                webDomains = exportedRule.webDomains
+                webDomains = exportedRule.webDomains,
+                autoKickAfterMinutes = exportedRule.autoKickAfterMinutes
             )
 
             repository.addRule(blockRule)

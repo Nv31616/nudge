@@ -5,12 +5,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Tracks per-app interaction counts (taps and scrolls) in memory.
+ * Tracks per-app session state in memory: interaction counts (taps and scrolls) and the
+ * foreground-time baseline that the time-based auto-kick measures against.
  *
- * Session counts reset when the foreground app changes AND the user has been
+ * Session state resets when the foreground app changes AND the user has been
  * away from the app longer than [SESSION_EXPIRY_MS]. Returning within the
- * expiry window preserves the session count so users cannot game auto-kick
- * by closing and reopening an app.
+ * expiry window preserves the session so users cannot game auto-kick
+ * by closing and reopening an app. **Both auto-kick triggers share this one definition of a
+ * session** — the interaction count and the foreground-time baseline are reset together, always.
  *
  * Daily totals persist until [resetDaily] is called (service restart or midnight).
  * All fields are in-memory only -- no DB writes on every interaction.
@@ -46,19 +48,29 @@ class InteractionTracker @Inject constructor() {
     /** Package -> epoch ms when cooldown expires. Set after auto-kick. */
     private val cooldownUntil = mutableMapOf<String, Long>()
 
-    /** Called when the foreground app changes. Resets the session count only if
-     *  the user has been away longer than [SESSION_EXPIRY_MS] (and not in cooldown). */
+    /**
+     * Package -> the foreground-time reading (see `UsageProvider.getDailyForegroundTimeMs`) taken
+     * when the current session began. The time-based auto-kick measures the delta against this, so
+     * only time actually spent in the app counts — never time on another app or with the screen
+     * off. Absent = this session has no baseline yet and the next reading establishes one.
+     */
+    private val sessionUsageBaseline = mutableMapOf<String, Long>()
+
+    /** Called when the foreground app changes. Resets the session (interaction count AND the
+     *  foreground-time baseline) only if the user has been away longer than [SESSION_EXPIRY_MS]
+     *  (and not in cooldown). */
     fun onAppChanged(packageName: String) {
         if (packageName != currentPackage) {
             // Record when we left the current app
             currentPackage?.let { lastLeftAt[it] = clock() }
 
-            // Only reset session counter if away long enough (and not in cooldown)
+            // Only reset session state if away long enough (and not in cooldown)
             if (!isInCooldown(packageName)) {
                 val leftAt = lastLeftAt[packageName]
                 val now = clock()
                 if (leftAt == null || (now - leftAt) >= SESSION_EXPIRY_MS) {
                     sessionCounts[packageName] = 0
+                    sessionUsageBaseline.remove(packageName)
                 }
             }
             lastLeftAt.remove(packageName)
@@ -80,6 +92,7 @@ class InteractionTracker @Inject constructor() {
 
     fun resetSession(packageName: String) {
         sessionCounts[packageName] = 0
+        sessionUsageBaseline.remove(packageName)
         lastLeftAt.remove(packageName)
         if (currentPackage == packageName) {
             currentPackage = null
@@ -90,6 +103,23 @@ class InteractionTracker @Inject constructor() {
     fun resetDaily() {
         dailyTotals.clear()
         lastLeftAt.clear()
+    }
+
+    // --- Session foreground-time baseline (time-based auto-kick) ---
+
+    /**
+     * The foreground-time reading recorded at the start of this package's current session, or null
+     * if the session has no baseline yet.
+     */
+    fun getSessionUsageBaseline(packageName: String): Long? = sessionUsageBaseline[packageName]
+
+    /**
+     * Records [usageMs] as the current session's baseline, replacing any previous one. Called when
+     * a session first gets a reading, and again after a backwards reading (a day rollover resets
+     * the daily foreground total, which would otherwise make the delta negative).
+     */
+    fun setSessionUsageBaseline(packageName: String, usageMs: Long) {
+        sessionUsageBaseline[packageName] = usageMs
     }
 
     // --- Cooldown ---

@@ -26,9 +26,12 @@ import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -82,9 +85,28 @@ class NudgeAccessibilityService : AccessibilityService() {
 
     private lateinit var interactionHandler: InteractionHandler
     private lateinit var timeRemainingHandler: TimeRemainingHandler
+    private lateinit var autoKickExecutor: AutoKickExecutor
+    private lateinit var autoKickTimeHandler: AutoKickTimeHandler
+
+    /**
+     * The periodic foreground-time clock (see [updateForegroundTimeTicker]). At most one runs at a
+     * time, for the package named by [tickingPackage].
+     */
+    private var foregroundTimeJob: Job? = null
+
+    @Volatile
+    private var tickingPackage: String? = null
 
     companion object {
         private const val DEBOUNCE_MS = 1000L
+
+        /**
+         * Cadence of the foreground-time clock. Matches the time-remaining overlay's existing
+         * update interval, so the two share one tick and one usage read. A time-based auto-kick can
+         * therefore overshoot its threshold by up to this much — acceptable against thresholds
+         * measured in minutes, and cheaper than a tighter poll on the 3GB Pixel 3.
+         */
+        private const val FOREGROUND_TICK_MS = 30_000L
 
         /** Upper bound on nodes scanned when harvesting Settings window text (bounded traversal). */
         private const val MAX_NODES_SCANNED = 800
@@ -336,6 +358,34 @@ class NudgeAccessibilityService : AccessibilityService() {
             serviceScope = serviceScope
         )
 
+        // ONE kick path, shared by both auto-kick triggers (interaction count and session time).
+        autoKickExecutor = AutoKickExecutor(
+            interactionTracker = entryPoint.interactionTracker(),
+            counterOverlayManager = entryPoint.counterOverlayManager(),
+            counterCache = counterCache,
+            logger = entryPoint.nudgeLogger(),
+            // Prefer the accessibility global action, exactly as EmergencyPassManager does: a HOME
+            // intent is not always honoured from inside another app's task, and a kick that leaves
+            // the user sitting in the app they were meant to be removed from is a silent failure.
+            goHome = {
+                if (!requestGoHome()) {
+                    startActivity(
+                        Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_HOME)
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                        }
+                    )
+                }
+            }
+        )
+
+        autoKickTimeHandler = AutoKickTimeHandler(
+            counterCache = counterCache,
+            interactionTracker = entryPoint.interactionTracker(),
+            usageProvider = entryPoint.usageRepository(),
+            logger = entryPoint.nudgeLogger()
+        )
+
         interactionHandler = InteractionHandler(
             interactionTracker = entryPoint.interactionTracker(),
             counterOverlayManager = entryPoint.counterOverlayManager(),
@@ -343,7 +393,7 @@ class NudgeAccessibilityService : AccessibilityService() {
             timeRemainingHandler = timeRemainingHandler,
             counterCache = counterCache,
             logger = entryPoint.nudgeLogger(),
-            startActivity = { intent -> startActivity(intent) }
+            autoKickExecutor = autoKickExecutor
         )
 
         entryPoint.nudgeLogger().i("accessibility service connected")
@@ -579,13 +629,18 @@ class NudgeAccessibilityService : AccessibilityService() {
             lastBlockedDomain = null
         }
 
-        if (!counterCache.isEnabled(packageName)) {
+        if (!counterCache.hasEntry(packageName)) {
             clearOverlays(packageName, "counter_disabled", markForeground = false)
         } else if (packageName != lastPackage) {
             interactionHandler.activeReelLabel = null
             interactionHandler.onAppChanged(packageName)
             timeRemainingHandler.resetDebounce()
         }
+
+        // Start/stop the foreground-time clock for this app. Deliberately BEFORE the emergency-pass,
+        // cooldown and passthrough early-returns below: a user who has just completed a delay is
+        // exactly who a time-based auto-kick is for, and their minutes must keep accruing.
+        updateForegroundTimeTicker(packageName)
 
         // Emergency "2-minute daily pass": while a free window is open for this app, let it through —
         // overriding normal evaluation AND any auto-kick cooldown (placed before the cooldown block so
@@ -594,7 +649,7 @@ class NudgeAccessibilityService : AccessibilityService() {
         // backstop.
         if (entryPoint.emergencyPassManager().isPassActive(packageName)) {
             entryPoint.nudgeLogger().d("skip evaluation package=$packageName reason=emergency_pass")
-            if (counterCache.isEnabled(packageName) && !interactionHandler.isCounterVisible()) {
+            if (counterCache.isCounterEnabled(packageName) && !interactionHandler.isCounterVisible()) {
                 interactionHandler.onAppChanged(packageName)
             }
             return
@@ -628,7 +683,7 @@ class NudgeAccessibilityService : AccessibilityService() {
         if (passthrough.shouldSkipForegroundEvaluation(packageName)) {
             entryPoint.nudgeLogger().d("skip evaluation package=$packageName reason=passthrough")
             // Ensure counter is visible post-delay (onAppChanged may not re-fire)
-            if (counterCache.isEnabled(packageName) && !interactionHandler.isCounterVisible()) {
+            if (counterCache.isCounterEnabled(packageName) && !interactionHandler.isCounterVisible()) {
                 interactionHandler.onAppChanged(packageName)
             }
             return
@@ -713,6 +768,9 @@ class NudgeAccessibilityService : AccessibilityService() {
             lastPackage = packageName
         }
         interactionHandler.onAppChanged(packageName)
+        // Whatever is in front now is not a clock-driven package (or is our own window / a system
+        // one), so stop reading the foreground-time clock.
+        stopForegroundTimeTicker()
 
         try {
             interactionHandler.hideCounter()
@@ -727,6 +785,7 @@ class NudgeAccessibilityService : AccessibilityService() {
      * hot path (already the main thread) when Nudge is globally disabled, so no stale overlay lingers.
      */
     private fun hideAllOverlays() {
+        stopForegroundTimeTicker()
         try {
             if (::interactionHandler.isInitialized) interactionHandler.hideCounter()
             if (::timeRemainingHandler.isInitialized) timeRemainingHandler.hide()
@@ -903,6 +962,75 @@ class NudgeAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Starts (or keeps) the periodic foreground-time clock for [packageName], or stops it if this
+     * app has nothing clock-driven configured.
+     *
+     * Why a clock at all: every other awareness path in this service is edge-triggered by
+     * accessibility events, which is fine for counting taps and scrolls but useless for a user
+     * watching passively — no events means no ticks means a time-based auto-kick that never fires
+     * and a daily limit that is only noticed the next time something happens to be tapped. One
+     * timer per foreground app closes that hole for both.
+     *
+     * Idempotent: repeated calls for the same package leave the running job (and therefore the tick
+     * phase) alone, which matters because `evaluateForegroundPackage` is re-entered on debounced
+     * events and on the issue #7 content-change fallback — restarting the job each time would keep
+     * resetting the `delay` and the clock would never actually tick.
+     */
+    private fun updateForegroundTimeTicker(packageName: String) {
+        val entry = counterCache.getEntry(packageName)
+        if (entry == null || !entry.needsForegroundTimeTick) {
+            stopForegroundTimeTicker()
+            return
+        }
+        if (packageName == tickingPackage && foregroundTimeJob?.isActive == true) return
+
+        stopForegroundTimeTicker()
+        tickingPackage = packageName
+        foregroundTimeJob = serviceScope.launch {
+            // Tick immediately so the session baseline is taken at (near) session start rather than
+            // one interval in, then settle into the periodic cadence.
+            while (isActive) {
+                tickForegroundTime(packageName)
+                delay(FOREGROUND_TICK_MS)
+            }
+        }
+    }
+
+    private fun stopForegroundTimeTicker() {
+        foregroundTimeJob?.cancel()
+        foregroundTimeJob = null
+        tickingPackage = null
+    }
+
+    /**
+     * One pass of the foreground-time clock: read usage once, feed the time-based auto-kick, then
+     * refresh the time-remaining overlay / daily-limit block.
+     *
+     * Runs on the service's IO scope (the usage read is a binder call); anything touching the
+     * WindowManager is hopped to Main.
+     */
+    private suspend fun tickForegroundTime(packageName: String) {
+        // A disabled Nudge behaves as if uninstalled — same invariant as the synchronous gate in
+        // onAccessibilityEvent, re-checked here because this runs on a timer, not on an event.
+        if (!globalEnabledCached) return
+
+        // The daily pass promises uninterrupted minutes; it overrides the time trigger exactly as
+        // it already overrides rule evaluation and the auto-kick cooldown.
+        if (entryPoint.emergencyPassManager().isPassActive(packageName)) return
+
+        if (autoKickTimeHandler.shouldKick(packageName)) {
+            withContext(Dispatchers.Main) {
+                autoKickExecutor.kick(packageName, reason = "session time")
+            }
+            // The user is on their way home; the next foreground event restarts the clock.
+            stopForegroundTimeTicker()
+            return
+        }
+
+        withContext(Dispatchers.Main) { timeRemainingHandler.maybeUpdate(packageName) }
+    }
+
     private fun refreshCounterCacheIfNeeded() {
         val now = System.currentTimeMillis()
         serviceScope.launch {
@@ -917,14 +1045,18 @@ class NudgeAccessibilityService : AccessibilityService() {
         val rules = entryPoint.blockRuleRepository().getEnabledRules().first()
         return CounterCacheRefresher.mergeEntries(
             rules
-                .filter { it.showCounter || it.showTimeRemaining }
+                // A time-based auto-kick needs no counter and no overlay, so it must be able to put
+                // a package in the cache on its own — otherwise the hot path would never see it.
+                .filter { it.showCounter || it.showTimeRemaining || it.autoKickAfterMinutes != null }
                 .mapNotNull { rule ->
                     rule.packageName?.let { pkg ->
                         pkg to CounterCacheEntry(
+                            showCounter = rule.showCounter,
                             autoKickAfter = rule.autoKickAfter,
                             showTimeRemaining = rule.showTimeRemaining,
                             dailyLimitMinutes = rule.dailyLimitMinutes,
-                            autoKickCooldownSeconds = rule.autoKickCooldownSeconds
+                            autoKickCooldownSeconds = rule.autoKickCooldownSeconds,
+                            autoKickAfterMinutes = rule.autoKickAfterMinutes
                         )
                     }
                 }
@@ -936,6 +1068,7 @@ class NudgeAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         if (instance === this) instance = null
+        stopForegroundTimeTicker()
         try {
             contentResolver.unregisterContentObserver(imeSettingObserver)
         } catch (_: Exception) {

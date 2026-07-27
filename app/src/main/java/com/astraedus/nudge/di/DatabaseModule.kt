@@ -30,7 +30,8 @@ object DatabaseModule {
             NudgeDatabase.MIGRATION_3_4,
             NudgeDatabase.MIGRATION_4_5,
             NudgeDatabase.MIGRATION_5_6,
-            NudgeDatabase.MIGRATION_6_7
+            NudgeDatabase.MIGRATION_6_7,
+            NudgeDatabase.MIGRATION_7_8
         ).build()
     }
 

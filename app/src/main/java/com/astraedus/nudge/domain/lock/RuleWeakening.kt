@@ -33,6 +33,9 @@ object RuleWeakening {
      *  - mode softened (HARD_BLOCK > DELAY > BREATHING)
      *  - delaySeconds shortened (less time to reconsider)
      *  - dailyLimitMinutes lowered, or removed when one existed (more allowance)
+     *  - autoKickAfter raised, or removed when one existed (more interactions before the kick)
+     *  - autoKickAfterMinutes raised, or removed when one existed (more session time before the kick)
+     *  - autoKickCooldownSeconds lowered (less time locked out after a kick)
      *
      * Strengthening or unchanged on all dimensions -> false.
      */
@@ -47,18 +50,33 @@ object RuleWeakening {
         if (new.delaySeconds < old.delaySeconds) return true
 
         // Daily limit: removing it, or raising it, grants more usage.
-        if (isDailyLimitWeakened(old.dailyLimitMinutes, new.dailyLimitMinutes)) return true
+        if (isNullableAllowanceRaised(old.dailyLimitMinutes, new.dailyLimitMinutes)) return true
+
+        // Auto-kick interaction threshold: removing it, or raising it, allows more scrolling
+        // before the kick fires.
+        if (isNullableAllowanceRaised(old.autoKickAfter, new.autoKickAfter)) return true
+
+        // Auto-kick time threshold: removing it, or raising it, allows more session time before
+        // the kick fires.
+        if (isNullableAllowanceRaised(old.autoKickAfterMinutes, new.autoKickAfterMinutes)) return true
+
+        // Auto-kick cooldown: lowering it (unlike the two thresholds above) means less time
+        // locked out after a kick, i.e. it gets EASIER to get back in sooner.
+        if (new.autoKickCooldownSeconds < old.autoKickCooldownSeconds) return true
 
         return false
     }
 
     /**
-     * A daily limit is weakened when an existing cap is removed (null) or raised. Adding a cap
-     * where none existed, or lowering an existing cap, is strengthening.
+     * A nullable "allowance" dimension (a cap that permits more usage the higher it is) is
+     * weakened when an existing value is removed (null) or raised. Adding a cap where none
+     * existed, or lowering an existing cap, is strengthening. Shared by [BlockRule.dailyLimitMinutes],
+     * [BlockRule.autoKickAfter], and [BlockRule.autoKickAfterMinutes] — all three follow the same
+     * "raised or removed-when-set = weaker" rule.
      */
-    private fun isDailyLimitWeakened(old: Int?, new: Int?): Boolean = when {
-        old == null -> false            // no cap before -> any new cap (or still none) is not weaker
-        new == null -> true             // had a cap, now removed -> weaker
-        else -> new > old               // cap raised -> weaker
+    private fun isNullableAllowanceRaised(old: Int?, new: Int?): Boolean = when {
+        old == null -> false            // none before -> any new value (or still none) is not weaker
+        new == null -> true             // had a value, now removed -> weaker
+        else -> new > old               // value raised -> weaker
     }
 }

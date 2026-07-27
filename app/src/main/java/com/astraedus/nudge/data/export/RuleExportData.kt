@@ -27,7 +27,8 @@ data class ExportedRule(
     val autoKickAfter: Int?,
     val showTimeRemaining: Boolean,
     val autoKickCooldownSeconds: Int,
-    val webDomains: String? = null
+    val webDomains: String? = null,
+    val autoKickAfterMinutes: Int? = null
 )
 
 data class ExportedGroup(

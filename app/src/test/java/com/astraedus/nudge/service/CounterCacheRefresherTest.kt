@@ -30,8 +30,8 @@ class CounterCacheRefresherTest {
         assertFalse(skippedRefresh)
         assertTrue(secondRefresh)
         assertEquals(2, queryCount)
-        assertFalse(refresher.isEnabled("com.example.alpha"))
-        assertTrue(refresher.isEnabled("com.example.beta"))
+        assertFalse(refresher.hasEntry("com.example.alpha"))
+        assertTrue(refresher.hasEntry("com.example.beta"))
     }
 
     @Test
