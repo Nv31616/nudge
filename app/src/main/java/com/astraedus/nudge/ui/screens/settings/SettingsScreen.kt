@@ -56,6 +56,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.astraedus.nudge.BuildConfig
 import com.astraedus.nudge.data.preferences.NudgePreferences
+import com.astraedus.nudge.domain.lock.LockedToggle
+import com.astraedus.nudge.domain.lock.SettingsWeakening
 import com.astraedus.nudge.domain.lock.StrictModeChallenge
 import com.astraedus.nudge.ui.components.AccessibilityDisclosureDialog
 import com.astraedus.nudge.ui.components.ChallengeDialog
@@ -88,20 +90,35 @@ fun SettingsScreen(
     var versionTapCount by rememberSaveable { mutableIntStateOf(0) }
     var developerOptionsVisible by rememberSaveable { mutableStateOf(false) }
     var showAccessibilityDisclosure by remember { mutableStateOf(false) }
-    // Strict Mode: turning OFF is gated by the unlock challenge. We hold the active target here;
-    // a fresh one is generated each time the user attempts to turn Strict Mode off.
-    var strictModeOffChallenge by remember { mutableStateOf<String?>(null) }
+    // Strict Mode gates every protection-WEAKENING flip on this screen behind the unlock challenge.
+    // One pending slot serves them all: the freshly generated target, the dialog prompt, and the
+    // action to run once the user types it. Null = no dialog up.
+    var pendingUnlock by remember { mutableStateOf<PendingSettingsUnlock?>(null) }
 
-    strictModeOffChallenge?.let { target ->
+    pendingUnlock?.let { pending ->
         ChallengeDialog(
-            target = target,
-            prompt = "Turn off Strict Mode",
+            target = pending.target,
+            prompt = pending.prompt,
             onUnlock = {
-                strictModeOffChallenge = null
-                coroutineScope.launch { preferences.setStrictModeEnabled(false) }
+                pendingUnlock = null
+                pending.onUnlock()
             },
-            onCancel = { strictModeOffChallenge = null }
+            onCancel = { pendingUnlock = null }
         )
+    }
+
+    // Route a toggle flip through the Strict Mode policy: weakening flips surface a fresh challenge,
+    // strengthening flips (and everything while Strict Mode is off) apply immediately.
+    fun applyLockedToggle(toggle: LockedToggle, enable: Boolean, apply: () -> Unit) {
+        if (SettingsWeakening.requiresUnlock(toggle, enable, strictModeEnabled)) {
+            pendingUnlock = PendingSettingsUnlock(
+                target = StrictModeChallenge.generate(strictModeLength),
+                prompt = unlockPrompt(toggle),
+                onUnlock = apply
+            )
+        } else {
+            apply()
+        }
     }
 
     if (showAccessibilityDisclosure) {
@@ -251,6 +268,13 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.primary
             )
 
+            // Turning Strict Mode ON is immediate; turning it OFF is gated by the challenge.
+            val onStrictModeChange: (Boolean) -> Unit = { wantOn ->
+                applyLockedToggle(LockedToggle.STRICT_MODE, wantOn) {
+                    coroutineScope.launch { preferences.setStrictModeEnabled(wantOn) }
+                }
+            }
+
             ListItem(
                 headlineContent = { Text("Lock my settings (Strict Mode)") },
                 supportingContent = {
@@ -258,26 +282,9 @@ fun SettingsScreen(
                 },
                 leadingContent = { Icon(Icons.Outlined.Lock, contentDescription = null) },
                 trailingContent = {
-                    Switch(
-                        checked = strictModeEnabled,
-                        onCheckedChange = { wantOn ->
-                            if (wantOn) {
-                                // Turning Strict Mode ON is immediate.
-                                coroutineScope.launch { preferences.setStrictModeEnabled(true) }
-                            } else {
-                                // Turning OFF is gated: surface a fresh challenge.
-                                strictModeOffChallenge = StrictModeChallenge.generate(strictModeLength)
-                            }
-                        }
-                    )
+                    Switch(checked = strictModeEnabled, onCheckedChange = onStrictModeChange)
                 },
-                modifier = Modifier.clickable {
-                    if (strictModeEnabled) {
-                        strictModeOffChallenge = StrictModeChallenge.generate(strictModeLength)
-                    } else {
-                        coroutineScope.launch { preferences.setStrictModeEnabled(true) }
-                    }
-                }
+                modifier = Modifier.clickable { onStrictModeChange(!strictModeEnabled) }
             )
 
             // Difficulty selector. Changing difficulty is not a weakening action (it doesn't undo
@@ -316,28 +323,29 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.primary
             )
 
+            // This toggle is the ONLY thing that decides whether the pass appears on block overlays
+            // (v1.10.0 — Strict Mode no longer hides it). It stays live under Strict Mode: turning
+            // the pass ON re-opens a one-tap bypass, so that direction takes the unlock challenge;
+            // turning it OFF strengthens protection and is always free.
+            val onEmergencyPassChange: (Boolean) -> Unit = { enable ->
+                applyLockedToggle(LockedToggle.EMERGENCY_PASS, enable) {
+                    coroutineScope.launch { preferences.setEmergencyPassEnabled(enable) }
+                }
+            }
+
             ListItem(
                 headlineContent = { Text("Daily 2-minute pass") },
                 supportingContent = {
-                    Text("Allow one 2-minute escape a day, shared across all blocked apps. Disabled while Strict Mode is on.")
+                    Text(
+                        "Allow one 2-minute escape a day, shared across all blocked apps." +
+                            if (strictModeEnabled) " Turning it on requires the unlock challenge." else ""
+                    )
                 },
                 leadingContent = { Icon(Icons.Outlined.Timer, contentDescription = null) },
                 trailingContent = {
-                    Switch(
-                        checked = emergencyPassEnabled,
-                        enabled = !strictModeEnabled,
-                        onCheckedChange = { enabled ->
-                            coroutineScope.launch {
-                                preferences.setEmergencyPassEnabled(enabled)
-                            }
-                        }
-                    )
+                    Switch(checked = emergencyPassEnabled, onCheckedChange = onEmergencyPassChange)
                 },
-                modifier = Modifier.clickable(enabled = !strictModeEnabled) {
-                    coroutineScope.launch {
-                        preferences.setEmergencyPassEnabled(!emergencyPassEnabled)
-                    }
-                }
+                modifier = Modifier.clickable { onEmergencyPassChange(!emergencyPassEnabled) }
             )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -439,6 +447,22 @@ fun SettingsScreen(
             Spacer(Modifier.height(16.dp))
         }
     }
+}
+
+/** A Strict-Mode-gated settings flip waiting on its typed unlock. */
+private data class PendingSettingsUnlock(
+    val target: String,
+    val prompt: String,
+    val onUnlock: () -> Unit
+)
+
+/**
+ * Dialog copy per lockable toggle. Only the WEAKENING direction is ever gated
+ * ([SettingsWeakening]), so each toggle needs exactly one prompt.
+ */
+private fun unlockPrompt(toggle: LockedToggle): String = when (toggle) {
+    LockedToggle.STRICT_MODE -> "Turn off Strict Mode"
+    LockedToggle.EMERGENCY_PASS -> "Turn on the daily 2-minute pass"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

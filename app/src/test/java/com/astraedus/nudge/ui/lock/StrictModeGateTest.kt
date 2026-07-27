@@ -1,6 +1,9 @@
 package com.astraedus.nudge.ui.lock
 
 import com.astraedus.nudge.data.preferences.NudgePreferences
+import com.astraedus.nudge.domain.lock.ChallengeState
+import com.astraedus.nudge.domain.lock.LockedToggle
+import com.astraedus.nudge.domain.lock.SettingsWeakening
 import com.astraedus.nudge.domain.lock.StrictModeChallenge
 import io.mockk.every
 import io.mockk.mockk
@@ -18,6 +21,10 @@ import org.junit.Test
  * when Strict Mode is OFF the action runs immediately; when ON the action is deferred (pending
  * challenge state set) and only runs after a successful verify. [StrictModeGate] is exercised
  * directly so the test has no Dispatchers.Main / viewModelScope dependency.
+ *
+ * The last block pins the Settings-screen composition added in v1.10.0 — [SettingsWeakening] decides
+ * WHICH flips are gated, this gate defers them — because that is where the escape-hatch toggle's new
+ * asymmetric behaviour lives now that Strict Mode no longer freezes it.
  */
 class StrictModeGateTest {
 
@@ -105,5 +112,57 @@ class StrictModeGateTest {
         gate.run(prompt = "weaken") {}
 
         assertEquals(StrictModeChallenge.LENGTH_HARD, gate.challenge.value!!.target.length)
+    }
+
+    /**
+     * Mirrors how `SettingsScreen` flips a lockable toggle: [SettingsWeakening] decides whether the
+     * flip is gated, and only then does the flip go through the challenge. Returns whether the flip
+     * was applied straight away, plus the pending challenge (null = none was raised).
+     */
+    private suspend fun flipToggle(
+        toggle: LockedToggle,
+        enable: Boolean,
+        strictOn: Boolean
+    ): Pair<Boolean, ChallengeState?> {
+        val gate = gate(strictOn = strictOn)
+        var applied = false
+        if (SettingsWeakening.requiresUnlock(toggle, enable, strictOn)) {
+            gate.run(prompt = "unlock") { applied = true }
+        } else {
+            applied = true
+        }
+        return applied to gate.challenge.value
+    }
+
+    @Test
+    fun `enabling the escape hatch under strict mode is challenged, disabling is free`() = runTest {
+        val (enabledApplied, enableChallenge) =
+            flipToggle(LockedToggle.EMERGENCY_PASS, enable = true, strictOn = true)
+        assertFalse("re-opening a one-tap bypass must not apply until unlocked", enabledApplied)
+        assertNotNull("a challenge should be raised", enableChallenge)
+
+        val (disabledApplied, disableChallenge) =
+            flipToggle(LockedToggle.EMERGENCY_PASS, enable = false, strictOn = true)
+        assertTrue("giving up the bypass strengthens protection — apply immediately", disabledApplied)
+        assertNull("no challenge for a strengthening flip", disableChallenge)
+    }
+
+    @Test
+    fun `with strict mode off the escape hatch flips freely both ways`() = runTest {
+        for (enable in listOf(true, false)) {
+            val (applied, challenge) =
+                flipToggle(LockedToggle.EMERGENCY_PASS, enable = enable, strictOn = false)
+            assertTrue("enable=$enable should apply immediately", applied)
+            assertNull("enable=$enable should raise no challenge", challenge)
+        }
+    }
+
+    @Test
+    fun `turning strict mode off still routes through the challenge`() = runTest {
+        val (applied, challenge) =
+            flipToggle(LockedToggle.STRICT_MODE, enable = false, strictOn = true)
+
+        assertFalse("the lock must not release without the unlock", applied)
+        assertNotNull(challenge)
     }
 }
