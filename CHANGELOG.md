@@ -2,6 +2,22 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.10.0] - 2026-07-27
+
+### Added
+- **Auto-close by time** (requested in [#6](https://github.com/astraedus/nudge/issues/6)): a rule can now send you home after N minutes in an app, not just after N scrolls or taps. It works while you watch passively — no interaction counter needed. Set either trigger or both; whichever fires first wins, and both share the same cooldown ("use an app 30 minutes, then lock it for 15" is now a real configuration).
+- **Free-form cooldowns**: auto-kick cooldowns are now entered as minutes (up to 24h) instead of a 0–5 minute slider. Existing cooldowns are preserved exactly — values that aren't a whole number of minutes display rounded up but are never rewritten unless you actually edit the field.
+
+### Changed
+- **The daily 2-minute pass is now controlled by its own Settings toggle alone.** Strict Mode no longer hides it from block screens — if you left the escape hatch on, it stays available. The toggle is also no longer greyed out while Strict Mode is on: turning it back ON now requires the unlock challenge (it re-opens a one-tap bypass), while turning it OFF is always free, like every other action that strengthens your protection.
+- **Strict Mode now recognises the auto-kick settings as protection**: raising or removing either kick threshold, or shortening the cooldown, requires the unlock challenge.
+- Auto-close now uses the accessibility "go home" action (with the old home-intent as fallback), which lands reliably from inside apps that previously stayed in the foreground.
+- Rules that only use the time-based kick no longer switch on the floating interaction counter.
+
+### Fixed
+- Editing a rule in the rule editor no longer wipes its "Block on web too" domains.
+- The daily time limit now blocks on time during passive use (e.g. video playback) instead of waiting for your next tap.
+
 ## [1.9.4] - 2026-07-27
 
 ### Fixed
