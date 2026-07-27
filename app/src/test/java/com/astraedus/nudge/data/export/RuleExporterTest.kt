@@ -260,4 +260,105 @@ class RuleExporterTest {
         assertEquals(1, result.rules.size)
         assertNull(result.rules[0].webDomains)
     }
+
+    @Test
+    fun `roundtrip preserves autoKickAfterMinutes field`() {
+        val rules = listOf(
+            BlockRule(
+                id = 1,
+                packageName = "com.instagram.android",
+                mode = "DELAY",
+                delaySeconds = 15,
+                enabled = true,
+                autoKickAfterMinutes = 30
+            )
+        )
+
+        val json = exporter.exportRules(rules, emptyList(), emptyMap())
+        val result = exporter.importRules(json)
+
+        assertNull(result.error)
+        assertEquals(1, result.rules.size)
+        assertEquals(30, result.rules[0].autoKickAfterMinutes)
+    }
+
+    @Test
+    fun `roundtrip preserves null autoKickAfterMinutes field`() {
+        val rules = listOf(
+            BlockRule(
+                id = 1,
+                packageName = "com.example.app",
+                mode = "HARD_BLOCK",
+                enabled = true,
+                autoKickAfterMinutes = null
+            )
+        )
+
+        val json = exporter.exportRules(rules, emptyList(), emptyMap())
+        val parsed = JSONObject(json)
+        val rule = parsed.getJSONArray("rules").getJSONObject(0)
+        assertTrue(rule.isNull("autoKickAfterMinutes"))
+
+        val result = exporter.importRules(json)
+        assertNull(result.error)
+        assertEquals(1, result.rules.size)
+        assertNull(result.rules[0].autoKickAfterMinutes)
+    }
+
+    @Test
+    fun `serialized JSON contains autoKickAfterMinutes key`() {
+        val rules = listOf(
+            BlockRule(id = 1, packageName = "com.example.app", mode = "DELAY", enabled = true)
+        )
+
+        val json = exporter.exportRules(rules, emptyList(), emptyMap())
+        val parsed = JSONObject(json)
+        val rule = parsed.getJSONArray("rules").getJSONObject(0)
+
+        assertTrue(rule.has("autoKickAfterMinutes"))
+    }
+
+    @Test
+    fun `import handles missing autoKickAfterMinutes field gracefully`() {
+        // Simulate an export from an older version (pre-autoKickAfterMinutes) without the key
+        val json = """
+        {
+          "version": 1,
+          "exportedAt": 1700000000000,
+          "rules": [{
+            "packageName": "com.example.app",
+            "groupName": null,
+            "mode": "DELAY",
+            "delaySeconds": 15,
+            "dailyLimitMinutes": null,
+            "enabled": true,
+            "scheduleDays": null,
+            "scheduleStartMinute": null,
+            "scheduleEndMinute": null,
+            "inAppFeatures": null,
+            "grayscale": false,
+            "showCounter": false,
+            "autoKickAfter": null,
+            "showTimeRemaining": false,
+            "autoKickCooldownSeconds": 60,
+            "webDomains": null
+          }],
+          "groups": []
+        }
+        """.trimIndent()
+
+        val result = exporter.importRules(json)
+
+        assertNull(result.error)
+        assertEquals(1, result.rules.size)
+        val rule = result.rules[0]
+        assertNull(rule.autoKickAfterMinutes)
+        // Other fields still parse correctly from this old-format export
+        assertEquals("com.example.app", rule.packageName)
+        assertEquals("DELAY", rule.mode)
+        assertEquals(15, rule.delaySeconds)
+        assertEquals(true, rule.enabled)
+        assertEquals(60, rule.autoKickCooldownSeconds)
+        assertNull(rule.webDomains)
+    }
 }

@@ -1,6 +1,5 @@
 package com.astraedus.nudge.service
 
-import android.content.Intent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.astraedus.nudge.domain.logging.NudgeLog
 
@@ -11,7 +10,7 @@ class InteractionHandler(
     private val timeRemainingHandler: TimeRemainingHandlerApi,
     private val counterCache: CounterCacheRefresher,
     private val logger: NudgeLog,
-    private val startActivity: (Intent) -> Unit
+    private val autoKickExecutor: AutoKickExecutor
 ) {
     private var lastClickTime: Long = 0L
     private val clickDebounceMs = 300L
@@ -22,7 +21,7 @@ class InteractionHandler(
     var activeReelLabel: String? = null
 
     fun handleViewClicked(packageName: String) {
-        if (!counterCache.isEnabled(packageName)) return
+        if (!counterCache.isCounterEnabled(packageName)) return
         val now = System.currentTimeMillis()
         if ((now - lastClickTime) < clickDebounceMs) return
         lastClickTime = now
@@ -33,7 +32,7 @@ class InteractionHandler(
     }
 
     fun handleViewScrolled(packageName: String, rootNodeProvider: () -> AccessibilityNodeInfo?) {
-        if (!counterCache.isEnabled(packageName)) return
+        if (!counterCache.isCounterEnabled(packageName)) return
         val now = System.currentTimeMillis()
         if ((now - lastScrollTime) < scrollDebounceMs) return
         lastScrollTime = now
@@ -71,24 +70,15 @@ class InteractionHandler(
     }
 
     private fun checkAutoKick(count: InteractionTracker.SessionCount) {
-        val cacheEntry = counterCache.getEntry(count.packageName) ?: return
-        val autoKickAfter = cacheEntry.autoKickAfter ?: return
+        val autoKickAfter = counterCache.getEntry(count.packageName)?.autoKickAfter ?: return
         if (count.sessionCount < autoKickAfter) return
 
-        logger.i("auto-kick triggered package=${count.packageName} session=${count.sessionCount} threshold=$autoKickAfter")
-
-        val cooldownSeconds = cacheEntry.autoKickCooldownSeconds
-        if (cooldownSeconds > 0) {
-            interactionTracker.setCooldown(count.packageName, cooldownSeconds.toLong() * 1000L)
-        }
-
-        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        startActivity(homeIntent)
-        interactionTracker.resetSession(count.packageName)
-        counterOverlayManager.hide()
+        // The kick itself (cooldown, home, session reset, overlay teardown) is shared with the
+        // time-based trigger -- see AutoKickExecutor.
+        autoKickExecutor.kick(
+            count.packageName,
+            reason = "interactions session=${count.sessionCount} threshold=$autoKickAfter"
+        )
     }
 
     /**
@@ -97,10 +87,12 @@ class InteractionHandler(
      * sees the counter as soon as they enter the app (not only after first interaction).
      */
     fun onAppChanged(packageName: String) {
+        // Always: this is the session boundary for BOTH auto-kick triggers, including packages
+        // that only have a time-based rule (and therefore no counter).
         interactionTracker.onAppChanged(packageName)
         // Show counter on app entry only if there is a persisted session count > 0
         // (avoids showing a confusing "0" when the user first opens an app)
-        if (counterCache.isEnabled(packageName)) {
+        if (counterCache.isCounterEnabled(packageName)) {
             val sessionCount = interactionTracker.getSessionCount(packageName)
             val dailyTotal = interactionTracker.getDailyTotal(packageName)
             if (sessionCount > 0) {
@@ -124,7 +116,7 @@ class InteractionHandler(
      * React Native re-renders.
      */
     fun handleContentChanged(packageName: String) {
-        if (!counterCache.isEnabled(packageName)) return
+        if (!counterCache.isCounterEnabled(packageName)) return
         // Only count content changes for non-SUPPORTED packages (Supported ones use scroll detection)
         if (packageName in InAppDetector.SUPPORTED_PACKAGES) return
         val now = System.currentTimeMillis()

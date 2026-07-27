@@ -1,6 +1,7 @@
 package com.astraedus.nudge.service
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
 
@@ -169,5 +170,77 @@ class InteractionTrackerTest {
         // No prior interaction with alpha -- first entry should be 0
         tracker.onAppChanged("com.example.alpha")
         assertEquals(0, tracker.getSessionCount("com.example.alpha"))
+    }
+
+    // --- Session foreground-time baseline (time-based auto-kick) ---
+
+    @Test
+    fun `session usage baseline starts absent and is set on demand`() {
+        assertNull(tracker.getSessionUsageBaseline("com.example.alpha"))
+
+        tracker.setSessionUsageBaseline("com.example.alpha", 12_345L)
+
+        assertEquals(12_345L, tracker.getSessionUsageBaseline("com.example.alpha"))
+    }
+
+    @Test
+    fun `session usage baseline is per package`() {
+        tracker.setSessionUsageBaseline("com.example.alpha", 1_000L)
+        tracker.setSessionUsageBaseline("com.example.beta", 2_000L)
+
+        assertEquals(1_000L, tracker.getSessionUsageBaseline("com.example.alpha"))
+        assertEquals(2_000L, tracker.getSessionUsageBaseline("com.example.beta"))
+    }
+
+    @Test
+    fun `session usage baseline survives a return inside the session window`() {
+        tracker.onAppChanged("com.example.alpha")
+        tracker.setSessionUsageBaseline("com.example.alpha", 5_000L)
+
+        tracker.onAppChanged("com.example.launcher")
+        fakeTime += 1_000
+        tracker.onAppChanged("com.example.alpha")
+
+        assertEquals(5_000L, tracker.getSessionUsageBaseline("com.example.alpha"))
+    }
+
+    @Test
+    fun `session usage baseline clears once the session expires`() {
+        tracker.onAppChanged("com.example.alpha")
+        tracker.setSessionUsageBaseline("com.example.alpha", 5_000L)
+
+        tracker.onAppChanged("com.example.launcher")
+        fakeTime += InteractionTracker.SESSION_EXPIRY_MS + 1
+        tracker.onAppChanged("com.example.alpha")
+
+        assertNull(tracker.getSessionUsageBaseline("com.example.alpha"))
+    }
+
+    @Test
+    fun `session usage baseline survives an expiry while in cooldown`() {
+        // Cooldown means the user was just kicked; the same carve-out that preserves the
+        // interaction count must preserve the time baseline, or the two triggers would disagree
+        // about whether this is still the same sitting.
+        tracker.onAppChanged("com.example.alpha")
+        tracker.setSessionUsageBaseline("com.example.alpha", 5_000L)
+        tracker.setCooldown("com.example.alpha", 10L * 60L * 1000L)
+
+        tracker.onAppChanged("com.example.launcher")
+        fakeTime += InteractionTracker.SESSION_EXPIRY_MS + 1
+        tracker.onAppChanged("com.example.alpha")
+
+        assertEquals(5_000L, tracker.getSessionUsageBaseline("com.example.alpha"))
+    }
+
+    @Test
+    fun `resetSession clears the usage baseline alongside the count`() {
+        tracker.onAppChanged("com.example.alpha")
+        repeat(3) { tracker.recordInteraction("com.example.alpha") }
+        tracker.setSessionUsageBaseline("com.example.alpha", 5_000L)
+
+        tracker.resetSession("com.example.alpha")
+
+        assertEquals(0, tracker.getSessionCount("com.example.alpha"))
+        assertNull(tracker.getSessionUsageBaseline("com.example.alpha"))
     }
 }

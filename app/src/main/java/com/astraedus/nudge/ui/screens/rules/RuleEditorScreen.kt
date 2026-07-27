@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.astraedus.nudge.domain.model.BlockMode
 import com.astraedus.nudge.ui.components.CustomTimeDialog
+import com.astraedus.nudge.ui.components.MinutesField
 import com.astraedus.nudge.ui.components.formatMinutesDisplay
 import kotlinx.coroutines.launch
 
@@ -583,112 +584,122 @@ fun RuleEditorScreen(
                         onCheckedChange = { viewModel.setShowCounter(it) }
                     )
                 }
+            }
 
-                // --- Auto-kick (only when counter is enabled) ---
-                if (state.showCounter) {
-                    Spacer(Modifier.height(8.dp))
+            HorizontalDivider()
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Text(
-                                    "Auto-close app",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                InfoButton(
-                                    "Automatically sends you to the home screen after a set number of scrolls or taps in one session.\n\n" +
-                                    "The counter resets when you re-open the app, so you start fresh each time.\n\n" +
-                                    "This is the nuclear option for stopping infinite scroll."
-                                )
-                            }
-                            Text(
-                                "Send to home screen after N scrolls or taps",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(
-                            checked = state.autoKickEnabled,
-                            onCheckedChange = { viewModel.setAutoKickEnabled(it) }
-                        )
-                    }
-
-                    if (state.autoKickEnabled) {
-                        Column(
-                            modifier = Modifier.padding(start = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+            // --- Auto-close app ---
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                "After ${state.autoKickAfter} scrolls/taps",
-                                style = MaterialTheme.typography.bodyMedium,
+                                "Auto-close app",
+                                style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Medium
                             )
-                            Slider(
-                                value = state.autoKickAfter.toFloat(),
-                                onValueChange = { viewModel.setAutoKickAfter(it.toInt()) },
-                                valueRange = 5f..100f,
-                                steps = 18, // (100-5)/5 - 1 = 18 steps for increments of 5
-                                modifier = Modifier.fillMaxWidth()
+                            InfoButton(
+                                "Automatically sends you to the home screen after N scrolls/taps and/or after a set amount of time in the app -- whichever happens first.\n\n" +
+                                "The interaction counter above must be on to kick by scrolls/taps. Kicking by time works either way.\n\n" +
+                                "After an auto-close, the app is locked behind a cooldown delay before you can re-open it.\n\n" +
+                                "This is the nuclear option for stopping infinite scroll."
                             )
+                        }
+                        Text(
+                            "Sends you to the home screen. Whichever trigger fires first wins.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = state.autoKickEnabled,
+                        onCheckedChange = { viewModel.setAutoKickEnabled(it) }
+                    )
+                }
+
+                if (state.autoKickEnabled) {
+                    Column(
+                        modifier = Modifier.padding(start = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (state.showCounter) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    "5",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    "After N interactions",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
                                 )
-                                Text(
-                                    "100",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                Switch(
+                                    checked = state.autoKickByInteractions,
+                                    onCheckedChange = { viewModel.setAutoKickByInteractions(it) }
                                 )
                             }
 
-                            Spacer(Modifier.height(8.dp))
-
+                            if (state.autoKickByInteractions) {
+                                Text(
+                                    "After ${state.autoKickAfter} scrolls/taps",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Slider(
+                                    value = state.autoKickAfter.toFloat(),
+                                    onValueChange = { viewModel.setAutoKickAfter(it.toInt()) },
+                                    valueRange = 5f..100f,
+                                    steps = 18, // (100-5)/5 - 1 = 18 steps for increments of 5
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "5",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        "100",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        } else {
                             Text(
-                                "Cooldown: ${state.autoKickCooldownSeconds}s",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                "Wait time before you can re-open the app after auto-close",
+                                "Turn on the interaction counter above to also kick after N scrolls or taps.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Slider(
-                                value = state.autoKickCooldownSeconds.toFloat(),
-                                onValueChange = { viewModel.setAutoKickCooldownSeconds(it.toInt()) },
-                                valueRange = 0f..300f,
-                                steps = 5, // 0, 60, 120, 180, 240, 300
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    "Off",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    "5m",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
                         }
+
+                        Spacer(Modifier.height(8.dp))
+
+                        MinutesField(
+                            value = state.autoKickAfterMinutesText,
+                            onValueChange = { viewModel.setAutoKickAfterMinutesText(it) },
+                            labelText = "Or after this long in the app",
+                            supportingText = "Counts foreground time in one session. Leave blank for off."
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        MinutesField(
+                            value = state.autoKickCooldownMinutesText,
+                            onValueChange = { viewModel.setAutoKickCooldownMinutesText(it) },
+                            labelText = "Cooldown",
+                            supportingText = "Wait this long before you can re-open the app after an auto-close."
+                        )
                     }
                 }
             }

@@ -50,7 +50,8 @@ class RuleExporter @Inject constructor() {
                 autoKickAfter = rule.autoKickAfter,
                 showTimeRemaining = rule.showTimeRemaining,
                 autoKickCooldownSeconds = rule.autoKickCooldownSeconds,
-                webDomains = rule.webDomains
+                webDomains = rule.webDomains,
+                autoKickAfterMinutes = rule.autoKickAfterMinutes
             )
         }
 
@@ -146,6 +147,7 @@ class RuleExporter @Inject constructor() {
             obj.put("showTimeRemaining", rule.showTimeRemaining)
             obj.put("autoKickCooldownSeconds", rule.autoKickCooldownSeconds)
             obj.put("webDomains", rule.webDomains ?: JSONObject.NULL)
+            obj.put("autoKickAfterMinutes", rule.autoKickAfterMinutes ?: JSONObject.NULL)
             rulesArray.put(obj)
         }
         root.put("rules", rulesArray)
@@ -186,7 +188,8 @@ class RuleExporter @Inject constructor() {
             autoKickAfter = obj.optIntOrNull("autoKickAfter"),
             showTimeRemaining = obj.optBoolean("showTimeRemaining", false),
             autoKickCooldownSeconds = obj.optInt("autoKickCooldownSeconds", 60),
-            webDomains = obj.optStringOrNull("webDomains")
+            webDomains = obj.optStringOrNull("webDomains"),
+            autoKickAfterMinutes = obj.optIntOrNull("autoKickAfterMinutes")
         )
     }
 

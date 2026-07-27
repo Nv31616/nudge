@@ -10,7 +10,8 @@ data class FeatureOverride(
     val delaySeconds: Int = 15,
     val autoKickEnabled: Boolean = false,
     val autoKickAfter: Int = 30,
-    val autoKickCooldownSeconds: Int = 60
+    val autoKickCooldownMinutesText: String = "1",
+    val originalAutoKickCooldownSeconds: Int = 60
 )
 
 @Immutable
@@ -40,8 +41,12 @@ data class UnifiedAppConfigState(
     val defaultMode: BlockMode = BlockMode.DELAY,
     val defaultDelaySeconds: Int = 15,
     val defaultAutoKickEnabled: Boolean = false,
+    val defaultAutoKickByInteractions: Boolean = true,
     val defaultAutoKickAfter: Int = 30,
-    val defaultAutoKickCooldownSeconds: Int = 60,
+    val defaultAutoKickAfterMinutesText: String = "",
+    val defaultAutoKickCooldownMinutesText: String = "1",
+    val originalAutoKickCooldownSeconds: Int = 60,
+    val originalAutoKickAfterMinutes: Int? = null,
 
     // Feature overrides (only for supported apps)
     val availableFeatures: List<FeatureInfo> = emptyList(),

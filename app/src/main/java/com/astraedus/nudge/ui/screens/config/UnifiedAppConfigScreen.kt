@@ -55,6 +55,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.astraedus.nudge.domain.model.BlockMode
 import com.astraedus.nudge.domain.model.FeatureMode
 import com.astraedus.nudge.ui.components.CustomTimeDialog
+import com.astraedus.nudge.ui.components.MinutesField
 import com.astraedus.nudge.ui.components.StrictModeChallengeHost
 import com.astraedus.nudge.ui.components.formatMinutesDisplay
 import com.astraedus.nudge.ui.hasGrayscalePermission
@@ -463,8 +464,9 @@ fun UnifiedAppConfigScreen(
                             fontWeight = FontWeight.Medium
                         )
                         InfoButton(
-                            "Sends you to the home screen after a set number of scrolls or taps.\n\n" +
-                            "The counter resets when you re-open the app. This is the nuclear option for stopping infinite scroll."
+                            "Sends you to the home screen after a set number of scrolls/taps, or after a set amount " +
+                            "of time in the app -- whichever fires first.\n\n" +
+                            "The counter and timer reset when you re-open the app. This is the nuclear option for stopping infinite scroll."
                         )
                     }
                     Switch(
@@ -476,54 +478,66 @@ fun UnifiedAppConfigScreen(
                 if (state.defaultAutoKickEnabled) {
                     Column(
                         modifier = Modifier.padding(start = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            "After ${state.defaultAutoKickAfter} interactions",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Slider(
-                            value = state.defaultAutoKickAfter.toFloat(),
-                            onValueChange = { viewModel.setDefaultAutoKickAfter(it.toInt()) },
-                            valueRange = 5f..100f,
-                            steps = 18,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("5", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("100", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-
-                        Spacer(Modifier.height(4.dp))
-
-                        Text(
-                            "Cooldown: ${state.defaultAutoKickCooldownSeconds}s",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            "Wait time before you can re-open the app after auto-close",
+                            "Whichever trigger fires first sends you to the home screen.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Slider(
-                            value = state.defaultAutoKickCooldownSeconds.toFloat(),
-                            onValueChange = { viewModel.setDefaultAutoKickCooldownSeconds(it.toInt()) },
-                            valueRange = 0f..300f,
-                            steps = 5,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Off", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("5m", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                "After N interactions",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Switch(
+                                checked = state.defaultAutoKickByInteractions,
+                                onCheckedChange = viewModel::setDefaultAutoKickByInteractions
+                            )
                         }
+
+                        if (state.defaultAutoKickByInteractions) {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    "After ${state.defaultAutoKickAfter} interactions",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Slider(
+                                    value = state.defaultAutoKickAfter.toFloat(),
+                                    onValueChange = { viewModel.setDefaultAutoKickAfter(it.toInt()) },
+                                    valueRange = 5f..100f,
+                                    steps = 18,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("5", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("100", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+
+                        MinutesField(
+                            value = state.defaultAutoKickAfterMinutesText,
+                            onValueChange = viewModel::setDefaultAutoKickAfterMinutesText,
+                            labelText = "Or after this long in the app",
+                            supportingText = "Counts foreground time in one session. Leave blank for off."
+                        )
+
+                        MinutesField(
+                            value = state.defaultAutoKickCooldownMinutesText,
+                            onValueChange = viewModel::setDefaultAutoKickCooldownMinutesText,
+                            labelText = "Cooldown",
+                            supportingText = "Wait this long before you can re-open the app after an auto-close."
+                        )
                     }
                 }
             }
@@ -866,16 +880,10 @@ private fun FeatureOverrideCard(
                         steps = 18,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Text(
-                        "Cooldown: ${override.autoKickCooldownSeconds}s",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Slider(
-                        value = override.autoKickCooldownSeconds.toFloat(),
-                        onValueChange = { onUpdate(override.copy(autoKickCooldownSeconds = it.toInt())) },
-                        valueRange = 0f..300f,
-                        steps = 5,
-                        modifier = Modifier.fillMaxWidth()
+                    MinutesField(
+                        value = override.autoKickCooldownMinutesText,
+                        onValueChange = { onUpdate(override.copy(autoKickCooldownMinutesText = it)) },
+                        labelText = "Cooldown"
                     )
                 }
             }

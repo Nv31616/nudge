@@ -16,13 +16,19 @@ class RuleWeakeningTest {
         mode: String = "DELAY",
         delaySeconds: Int = 15,
         dailyLimitMinutes: Int? = null,
-        enabled: Boolean = true
+        enabled: Boolean = true,
+        autoKickAfter: Int? = null,
+        autoKickAfterMinutes: Int? = null,
+        autoKickCooldownSeconds: Int = 60
     ) = BlockRule(
         packageName = "com.example",
         mode = mode,
         delaySeconds = delaySeconds,
         dailyLimitMinutes = dailyLimitMinutes,
-        enabled = enabled
+        enabled = enabled,
+        autoKickAfter = autoKickAfter,
+        autoKickAfterMinutes = autoKickAfterMinutes,
+        autoKickCooldownSeconds = autoKickCooldownSeconds
     )
 
     // ── delay ──
@@ -113,6 +119,152 @@ class RuleWeakeningTest {
         assertFalse(RuleWeakening.isWeakening(rule(enabled = false), rule(enabled = true)))
     }
 
+    // ── auto-kick after (interaction count) ──
+
+    @Test
+    fun `raised autoKickAfter is weakening`() {
+        assertTrue(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfter = 20),
+                rule(autoKickAfter = 40)
+            )
+        )
+    }
+
+    @Test
+    fun `lowered autoKickAfter is not weakening`() {
+        assertFalse(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfter = 40),
+                rule(autoKickAfter = 20)
+            )
+        )
+    }
+
+    @Test
+    fun `removing an existing autoKickAfter is weakening`() {
+        assertTrue(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfter = 20),
+                rule(autoKickAfter = null)
+            )
+        )
+    }
+
+    @Test
+    fun `adding autoKickAfter where none existed is not weakening`() {
+        assertFalse(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfter = null),
+                rule(autoKickAfter = 20)
+            )
+        )
+    }
+
+    @Test
+    fun `autoKickAfter unset on both sides is not weakening`() {
+        assertFalse(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfter = null),
+                rule(autoKickAfter = null)
+            )
+        )
+    }
+
+    // ── auto-kick after minutes (session time) ──
+
+    @Test
+    fun `raised autoKickAfterMinutes is weakening`() {
+        assertTrue(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfterMinutes = 10),
+                rule(autoKickAfterMinutes = 20)
+            )
+        )
+    }
+
+    @Test
+    fun `lowered autoKickAfterMinutes is not weakening`() {
+        assertFalse(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfterMinutes = 20),
+                rule(autoKickAfterMinutes = 10)
+            )
+        )
+    }
+
+    @Test
+    fun `removing an existing autoKickAfterMinutes is weakening`() {
+        assertTrue(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfterMinutes = 10),
+                rule(autoKickAfterMinutes = null)
+            )
+        )
+    }
+
+    @Test
+    fun `adding autoKickAfterMinutes where none existed is not weakening`() {
+        assertFalse(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfterMinutes = null),
+                rule(autoKickAfterMinutes = 10)
+            )
+        )
+    }
+
+    @Test
+    fun `autoKickAfterMinutes unset on both sides is not weakening`() {
+        assertFalse(
+            RuleWeakening.isWeakening(
+                rule(autoKickAfterMinutes = null),
+                rule(autoKickAfterMinutes = null)
+            )
+        )
+    }
+
+    // ── auto-kick cooldown ──
+
+    @Test
+    fun `lowered autoKickCooldownSeconds is weakening`() {
+        assertTrue(
+            RuleWeakening.isWeakening(
+                rule(autoKickCooldownSeconds = 60),
+                rule(autoKickCooldownSeconds = 30)
+            )
+        )
+    }
+
+    @Test
+    fun `raised autoKickCooldownSeconds is not weakening`() {
+        assertFalse(
+            RuleWeakening.isWeakening(
+                rule(autoKickCooldownSeconds = 30),
+                rule(autoKickCooldownSeconds = 60)
+            )
+        )
+    }
+
+    @Test
+    fun `unchanged autoKickCooldownSeconds is not weakening`() {
+        assertFalse(
+            RuleWeakening.isWeakening(
+                rule(autoKickCooldownSeconds = 60),
+                rule(autoKickCooldownSeconds = 60)
+            )
+        )
+    }
+
+    @Test
+    fun `lowering autoKickCooldownSeconds to zero is weakening`() {
+        assertTrue(
+            RuleWeakening.isWeakening(
+                rule(autoKickCooldownSeconds = 60),
+                rule(autoKickCooldownSeconds = 0)
+            )
+        )
+    }
+
     // ── identity / mixed ──
 
     @Test
@@ -125,6 +277,14 @@ class RuleWeakeningTest {
         // Stronger mode (DELAY -> HARD_BLOCK) but shorter delay (30 -> 5).
         val old = rule(mode = "DELAY", delaySeconds = 30)
         val new = rule(mode = "HARD_BLOCK", delaySeconds = 5)
+        assertTrue(RuleWeakening.isWeakening(old, new))
+    }
+
+    @Test
+    fun `strengthening one auto-kick axis while weakening another still counts as weakening`() {
+        // Lower autoKickAfter (60 -> 20, strengthening) but lower cooldown too (60 -> 10, weakening).
+        val old = rule(autoKickAfter = 60, autoKickCooldownSeconds = 60)
+        val new = rule(autoKickAfter = 20, autoKickCooldownSeconds = 10)
         assertTrue(RuleWeakening.isWeakening(old, new))
     }
 }

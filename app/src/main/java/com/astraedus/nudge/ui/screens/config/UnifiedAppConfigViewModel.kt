@@ -11,6 +11,7 @@ import com.astraedus.nudge.domain.lock.ChallengeState
 import com.astraedus.nudge.domain.lock.RuleWeakening
 import com.astraedus.nudge.domain.model.BlockMode
 import com.astraedus.nudge.domain.model.FeatureMode
+import com.astraedus.nudge.ui.components.DurationInput
 import com.astraedus.nudge.ui.lock.StrictModeGate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,7 +86,8 @@ class UnifiedAppConfigViewModel @Inject constructor(
                     delaySeconds = rule.delaySeconds,
                     autoKickEnabled = rule.autoKickAfter != null,
                     autoKickAfter = rule.autoKickAfter ?: 30,
-                    autoKickCooldownSeconds = rule.autoKickCooldownSeconds
+                    autoKickCooldownMinutesText = DurationInput.cooldownSecondsToText(rule.autoKickCooldownSeconds),
+                    originalAutoKickCooldownSeconds = rule.autoKickCooldownSeconds
                 )
             }
 
@@ -98,7 +100,8 @@ class UnifiedAppConfigViewModel @Inject constructor(
                     delaySeconds = rule.delaySeconds,
                     autoKickEnabled = rule.autoKickAfter != null,
                     autoKickAfter = rule.autoKickAfter ?: 30,
-                    autoKickCooldownSeconds = rule.autoKickCooldownSeconds
+                    autoKickCooldownMinutesText = DurationInput.cooldownSecondsToText(rule.autoKickCooldownSeconds),
+                    originalAutoKickCooldownSeconds = rule.autoKickCooldownSeconds
                 )
             }
 
@@ -134,9 +137,13 @@ class UnifiedAppConfigViewModel @Inject constructor(
                 // Default behavior
                 defaultMode = parseBlockMode(defaultAppRule?.mode),
                 defaultDelaySeconds = defaultAppRule?.delaySeconds ?: 15,
-                defaultAutoKickEnabled = defaultAppRule?.autoKickAfter != null,
+                defaultAutoKickEnabled = defaultAppRule?.autoKickAfter != null || defaultAppRule?.autoKickAfterMinutes != null,
+                defaultAutoKickByInteractions = defaultAppRule == null || defaultAppRule.autoKickAfter != null,
                 defaultAutoKickAfter = defaultAppRule?.autoKickAfter ?: 30,
-                defaultAutoKickCooldownSeconds = defaultAppRule?.autoKickCooldownSeconds ?: 60,
+                defaultAutoKickAfterMinutesText = DurationInput.minutesToText(defaultAppRule?.autoKickAfterMinutes),
+                defaultAutoKickCooldownMinutesText = DurationInput.cooldownSecondsToText(defaultAppRule?.autoKickCooldownSeconds ?: 60),
+                originalAutoKickCooldownSeconds = defaultAppRule?.autoKickCooldownSeconds ?: 60,
+                originalAutoKickAfterMinutes = defaultAppRule?.autoKickAfterMinutes,
                 // Feature overrides
                 availableFeatures = availableFeatures,
                 featureOverrides = featureOverrides,
@@ -190,8 +197,14 @@ class UnifiedAppConfigViewModel @Inject constructor(
             showCounter = state.showCounter,
             showTimeRemaining = state.showTimeRemaining && state.dailyLimitEnabled,
             grayscale = state.grayscale,
-            autoKickAfter = if (state.defaultAutoKickEnabled) state.defaultAutoKickAfter else null,
-            autoKickCooldownSeconds = state.defaultAutoKickCooldownSeconds,
+            autoKickAfter = if (state.defaultAutoKickEnabled && state.defaultAutoKickByInteractions) state.defaultAutoKickAfter else null,
+            autoKickAfterMinutes = if (state.defaultAutoKickEnabled) {
+                DurationInput.resolveMinutes(state.defaultAutoKickAfterMinutesText, state.originalAutoKickAfterMinutes)
+            } else null,
+            autoKickCooldownSeconds = DurationInput.resolveCooldownSeconds(
+                state.defaultAutoKickCooldownMinutesText,
+                state.originalAutoKickCooldownSeconds
+            ),
             webDomains = webDomains
         )
     }
@@ -241,7 +254,10 @@ class UnifiedAppConfigViewModel @Inject constructor(
                     enabled = state.enabled,
                     inAppFeatures = featureKey,
                     autoKickAfter = if (override.autoKickEnabled) override.autoKickAfter else null,
-                    autoKickCooldownSeconds = override.autoKickCooldownSeconds,
+                    autoKickCooldownSeconds = DurationInput.resolveCooldownSeconds(
+                        override.autoKickCooldownMinutesText,
+                        override.originalAutoKickCooldownSeconds
+                    ),
                     showCounter = state.showCounter
                 )
             )
@@ -283,7 +299,10 @@ class UnifiedAppConfigViewModel @Inject constructor(
                         enabled = state.enabled,
                         inAppFeatures = featureKey,
                         autoKickAfter = if (override.autoKickEnabled) override.autoKickAfter else null,
-                        autoKickCooldownSeconds = override.autoKickCooldownSeconds,
+                        autoKickCooldownSeconds = DurationInput.resolveCooldownSeconds(
+                            override.autoKickCooldownMinutesText,
+                            override.originalAutoKickCooldownSeconds
+                        ),
                         showCounter = state.showCounter,
                         scheduleDays = scheduleDaysStr,
                         scheduleStartMinute = startMin,
@@ -388,15 +407,33 @@ class UnifiedAppConfigViewModel @Inject constructor(
     }
 
     fun setDefaultAutoKickEnabled(enabled: Boolean) {
-        _uiState.value = _uiState.value.copy(defaultAutoKickEnabled = enabled)
+        val state = _uiState.value
+        // Switching the section on when neither trigger is configured would be a toggle that
+        // silently does nothing. Fall back to the interaction trigger -- which is exactly what
+        // this switch meant before the time trigger existed.
+        val noTriggerConfigured = !state.defaultAutoKickByInteractions &&
+            DurationInput.parseMinutes(state.defaultAutoKickAfterMinutesText) == null
+        _uiState.value = state.copy(
+            defaultAutoKickEnabled = enabled,
+            defaultAutoKickByInteractions = state.defaultAutoKickByInteractions ||
+                (enabled && noTriggerConfigured)
+        )
+    }
+
+    fun setDefaultAutoKickByInteractions(enabled: Boolean) {
+        _uiState.value = _uiState.value.copy(defaultAutoKickByInteractions = enabled)
     }
 
     fun setDefaultAutoKickAfter(count: Int) {
         _uiState.value = _uiState.value.copy(defaultAutoKickAfter = count)
     }
 
-    fun setDefaultAutoKickCooldownSeconds(seconds: Int) {
-        _uiState.value = _uiState.value.copy(defaultAutoKickCooldownSeconds = seconds)
+    fun setDefaultAutoKickAfterMinutesText(text: String) {
+        _uiState.value = _uiState.value.copy(defaultAutoKickAfterMinutesText = text)
+    }
+
+    fun setDefaultAutoKickCooldownMinutesText(text: String) {
+        _uiState.value = _uiState.value.copy(defaultAutoKickCooldownMinutesText = text)
     }
 
     // ═══ Feature overrides ═══
