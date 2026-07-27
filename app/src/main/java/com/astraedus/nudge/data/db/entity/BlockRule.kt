@@ -30,5 +30,8 @@ data class BlockRule(
     // Cooldown after auto-kick in seconds (0 = no cooldown)
     val autoKickCooldownSeconds: Int = 60,
     // Web domain blocking (comma-separated: "instagram.com,www.instagram.com")
-    val webDomains: String? = null
+    val webDomains: String? = null,
+    // Time-based auto-kick: send user to home screen after this many minutes of foreground time in
+    // one session (null = disabled). Independent of [autoKickAfter]; whichever fires first kicks.
+    val autoKickAfterMinutes: Int? = null
 )

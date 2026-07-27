@@ -61,6 +61,31 @@ class NudgeDatabaseMigrationTest {
     }
 
     @Test
+    fun `MIGRATION_7_8 adds autoKickAfterMinutes column`() {
+        val db = RecordingDatabase()
+
+        NudgeDatabase.MIGRATION_7_8.migrate(db.proxy)
+
+        assertEquals(
+            listOf("ALTER TABLE block_rules ADD COLUMN autoKickAfterMinutes INTEGER DEFAULT NULL"),
+            db.sql
+        )
+    }
+
+    @Test
+    fun `MIGRATION_7_8 adds a NULLABLE column so existing rules default to time-kick off`() {
+        val db = RecordingDatabase()
+
+        NudgeDatabase.MIGRATION_7_8.migrate(db.proxy)
+
+        // No NOT NULL: pre-migration rows must read back as null (= feature disabled), never as 0
+        // (which would mean "kick after 0 minutes" and lock every existing user out of every app).
+        val sql = db.sql.single()
+        assert(!sql.contains("NOT NULL")) { "autoKickAfterMinutes must stay nullable, got: $sql" }
+        assert(sql.contains("DEFAULT NULL")) { "expected explicit DEFAULT NULL, got: $sql" }
+    }
+
+    @Test
     fun `all migrations registered from version 1 to current`() {
         val allMigrations = listOf(
             NudgeDatabase.MIGRATION_1_2,
@@ -68,10 +93,11 @@ class NudgeDatabaseMigrationTest {
             NudgeDatabase.MIGRATION_3_4,
             NudgeDatabase.MIGRATION_4_5,
             NudgeDatabase.MIGRATION_5_6,
-            NudgeDatabase.MIGRATION_6_7
+            NudgeDatabase.MIGRATION_6_7,
+            NudgeDatabase.MIGRATION_7_8
         )
 
-        val currentVersion = 7
+        val currentVersion = 8
 
         // Every version gap from 1 to current must have a migration
         for (v in 1 until currentVersion) {
