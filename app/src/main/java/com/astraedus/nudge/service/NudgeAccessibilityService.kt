@@ -2,6 +2,10 @@ package com.astraedus.nudge.service
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.astraedus.nudge.data.db.entity.UsageEvent
@@ -90,11 +94,45 @@ class NudgeAccessibilityService : AccessibilityService() {
             "com.android.settings",
             "com.android.packageinstaller",
             "com.android.permissioncontroller",
+            "com.samsung.android.launcher",
+        )
+
+        /** The `android` framework package: hosts toasts, transient dialogs, and — the important
+         *  one for issue #5 — the floating text-selection / paste toolbar and long-press popups. */
+        const val FRAMEWORK_PACKAGE = "android"
+
+        /**
+         * Static soft-keyboard packages. A fallback only — the *active* keyboard is matched
+         * dynamically (see [isTransientNonAppPackage] + [currentImePackage]), which is what covers
+         * third-party keyboards (FUTO, SwiftKey, …) that are not on any hardcoded list.
+         */
+        val IME_PACKAGES = setOf(
             "com.android.inputmethod.latin",
             "com.google.android.inputmethod.latin",
             "com.sec.android.inputmethod",
-            "com.samsung.android.launcher",
         )
+
+        /**
+         * True when a window event comes from a transient, non-application window that must NOT be
+         * treated as a foreground app switch: any soft keyboard / IME (matched dynamically against
+         * [currentImePackage] so EVERY keyboard is covered, plus the static [IME_PACKAGES]
+         * fallback), or the [FRAMEWORK_PACKAGE] that hosts toasts / transient dialogs / the paste
+         * + long-press popup toolbars.
+         *
+         * Root cause of issue #5: after a delay completes, passthrough is granted for app X. When
+         * the user then opened the keyboard or a paste/long-press popup, that surfaced a *different*
+         * package on a window event; routing it into evaluation cleared X's passthrough, so tapping
+         * back into X re-triggered the block. Recognising these as transient — and ignoring their
+         * window events — keeps the passthrough intact.
+         */
+        internal fun isTransientNonAppPackage(
+            packageName: String,
+            currentImePackage: String?
+        ): Boolean {
+            return packageName == FRAMEWORK_PACKAGE ||
+                packageName in IME_PACKAGES ||
+                (currentImePackage != null && packageName == currentImePackage)
+        }
 
         val WINDOW_CHANGE_EVENT_TYPES = setOf(
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
@@ -159,11 +197,13 @@ class NudgeAccessibilityService : AccessibilityService() {
         internal fun isOverlayBypassedByForeground(
             eventType: Int,
             packageName: String,
-            ownPackageName: String
+            ownPackageName: String,
+            currentImePackage: String? = null
         ): Boolean {
             return eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
                 packageName != ownPackageName &&
-                packageName !in SYSTEM_PACKAGES
+                packageName !in SYSTEM_PACKAGES &&
+                !isTransientNonAppPackage(packageName, currentImePackage)
         }
     }
 
@@ -197,6 +237,38 @@ class NudgeAccessibilityService : AccessibilityService() {
      */
     @Volatile private var globalEnabledCached: Boolean = true
 
+    /**
+     * Package of the currently-selected default keyboard (IME), read from
+     * [Settings.Secure.DEFAULT_INPUT_METHOD]. Cached so the hot accessibility path can recognise
+     * ANY keyboard's window events as transient (issue #5) without a hardcoded list. Kept fresh via
+     * [imeSettingObserver] so switching keyboards is picked up.
+     */
+    @Volatile private var currentImePackage: String? = null
+
+    /** Refreshes [currentImePackage] whenever the default keyboard changes. */
+    private val imeSettingObserver by lazy {
+        object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                refreshCurrentImePackage()
+            }
+        }
+    }
+
+    /**
+     * Read and cache the current default IME's package. The secure setting value looks like
+     * `org.futo.inputmethod.latin/.LatinIME`; we keep only the package half. Fails soft to null.
+     */
+    private fun refreshCurrentImePackage() {
+        currentImePackage = try {
+            Settings.Secure.getString(
+                contentResolver,
+                Settings.Secure.DEFAULT_INPUT_METHOD
+            )?.substringBefore('/')?.takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -228,6 +300,19 @@ class NudgeAccessibilityService : AccessibilityService() {
         )
 
         entryPoint.nudgeLogger().i("accessibility service connected")
+
+        // Track the active keyboard so its window events are recognised as transient (issue #5),
+        // and keep it fresh if the user switches keyboards.
+        refreshCurrentImePackage()
+        try {
+            contentResolver.registerContentObserver(
+                Settings.Secure.getUriFor(Settings.Secure.DEFAULT_INPUT_METHOD),
+                false,
+                imeSettingObserver
+            )
+        } catch (e: Exception) {
+            entryPoint.nudgeLogger().w("failed to observe default IME setting", e)
+        }
 
         // Keep Strict Mode state cached so the hot accessibility-event path can read it without
         // blocking on DataStore.
@@ -271,7 +356,8 @@ class NudgeAccessibilityService : AccessibilityService() {
             if (isOverlayBypassedByForeground(
                     event.eventType,
                     packageName,
-                    applicationContext.packageName
+                    applicationContext.packageName,
+                    currentImePackage
                 )
             ) {
                 isOverlayActive = false
@@ -288,6 +374,16 @@ class NudgeAccessibilityService : AccessibilityService() {
             if (isOwnAppWindowEvent(event)) {
                 clearOverlays(packageName, "own_app_window")
             }
+            return
+        }
+
+        // Transient, non-application windows (any soft keyboard, or the `android` framework package
+        // that hosts the paste/long-press popups + toasts) must NOT be treated as an app switch.
+        // Doing so cleared post-delay passthrough and re-triggered the block on return (issue #5).
+        // Ignore the event entirely: don't clear overlays, don't clear passthrough, don't move
+        // lastPackage — the real app underneath hasn't changed.
+        if (isTransientNonAppPackage(packageName, currentImePackage)) {
+            entryPoint.nudgeLogger().d("ignoring transient non-app window package=$packageName")
             return
         }
 
@@ -743,6 +839,11 @@ class NudgeAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         if (instance === this) instance = null
+        try {
+            contentResolver.unregisterContentObserver(imeSettingObserver)
+        } catch (_: Exception) {
+            // Observer may never have registered (register failed) — ignore.
+        }
         entryPoint.counterOverlayManager().clearServiceContext()
         entryPoint.timeRemainingOverlayManager().clearServiceContext()
         passthroughManagerInstance = null

@@ -2,6 +2,11 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.3] - 2026-07-27
+
+### Fixed
+- **Typing or using a paste popup no longer re-triggers the delay** (reported in [#5](https://github.com/astraedus/nudge/issues/5)): after you'd waited out a delay and were using a blocked app, opening the keyboard, or dismissing a paste / long-press popup, could make Nudge think you were re-opening the app and show the delay again. Nudge now recognises any keyboard (matched against your active keyboard, so third-party keyboards like FUTO are covered too — not just a hardcoded few) and the system pop-up/toast windows as *not* an app switch, so your pass-through survives them. Genuinely switching to a different app still re-asserts the block as before.
+
 ## [1.9.2] - 2026-07-19
 
 ### Fixed
