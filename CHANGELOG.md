@@ -2,6 +2,12 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.9.4] - 2026-07-27
+
+### Fixed
+- **The delay can no longer be bypassed by tabbing out and waiting** (reported in [#8](https://github.com/astraedus/nudge/issues/8)): the countdown used to keep running invisibly after you pressed Home mid-delay — wait a few seconds on the launcher and the app would open with no delay at all, and a stale overlay could linger with the timer still counting. The countdown now only runs while the block screen is actually in front of you: leaving it (Home, switching apps, screen off) abandons the attempt entirely, and coming back always starts a fresh, full delay. Breathing exercises count only the time you actually spend watching them too.
+- **Re-entering an app via Recents or a notification now reliably starts the timer/block** (reported in [#7](https://github.com/astraedus/nudge/issues/7)): Android sometimes delivers no app-switch event for those re-entries, so Nudge occasionally missed them — no delay, no counter, no time-remaining overlay. Nudge now detects these returns through a verified fallback (it confirms the app really is in the foreground before acting, so the [#5](https://github.com/astraedus/nudge/issues/5) keyboard fix can't regress).
+
 ## [1.9.3] - 2026-07-27
 
 ### Fixed
