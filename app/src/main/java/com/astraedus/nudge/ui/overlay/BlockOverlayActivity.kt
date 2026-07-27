@@ -90,11 +90,10 @@ class BlockOverlayActivity : ComponentActivity() {
         val hardBlockPool: List<String>
         // Emergency "2-minute daily pass" UI state, computed once alongside the message pools so the
         // button/hint is correct on first composition. The lockout is GLOBAL (one pass per 24h across
-        // all apps); the free window it grants is scoped to this app. Skipped for the "web"/content-
-        // filter pseudo-package (granting a per-app window is meaningless there).
-        var canUseEmergencyPass = false
-        var emergencyLocked = false
-        var nextPassMs = 0L
+        // all apps); the free window it grants is scoped to this app. Strict Mode is NOT consulted —
+        // the pass is governed by its own Settings toggle alone (v1.10.0); see
+        // [resolveEmergencyPassState], which owns the whole decision.
+        var passState = EmergencyPassUiState()
         runBlocking {
             titlePool = NudgeMessages.resolvePool(
                 nudgePreferences.customDelayTitles.first(), NudgeMessages.delayTitles
@@ -106,20 +105,12 @@ class BlockOverlayActivity : ComponentActivity() {
                 nudgePreferences.customHardBlockMessages.first(), NudgeMessages.hardBlockMessages
             )
 
-            if (packageName.isNotEmpty() && packageName != "web") {
-                val strictOn = nudgePreferences.isStrictModeEnabled.first()
-                val passEnabled = nudgePreferences.emergencyPassEnabled.first()
-                val usage = EmergencyPass.parse(nudgePreferences.emergencyPassUsage.first())
-                val now = System.currentTimeMillis()
-                canUseEmergencyPass = !strictOn && passEnabled &&
-                    EmergencyPass.canUseGlobal(usage, now, EmergencyPass.LOCKOUT_MS)
-                // Show the disabled "next pass in Xh" hint only when the feature is on but spent —
-                // never when Strict Mode is on or the feature is disabled (button hidden entirely).
-                emergencyLocked = !strictOn && passEnabled && !canUseEmergencyPass
-                nextPassMs = if (emergencyLocked) {
-                    EmergencyPass.nextAvailableGlobalMs(usage, now, EmergencyPass.LOCKOUT_MS)
-                } else 0L
-            }
+            passState = resolveEmergencyPassState(
+                packageName = packageName,
+                passEnabled = nudgePreferences.emergencyPassEnabled.first(),
+                usage = EmergencyPass.parse(nudgePreferences.emergencyPassUsage.first()),
+                now = System.currentTimeMillis()
+            )
         }
 
         // Grant the pass and return to the blocked app. finish() brings it back to the foreground;
@@ -142,9 +133,9 @@ class BlockOverlayActivity : ComponentActivity() {
                             onGoBack = { navigateHome() },
                             ruleName = ruleName,
                             messagePool = hardBlockPool,
-                            canUseEmergencyPass = canUseEmergencyPass,
-                            emergencyLocked = emergencyLocked,
-                            nextPassMs = nextPassMs,
+                            canUseEmergencyPass = passState.canUse,
+                            emergencyLocked = passState.locked,
+                            nextPassMs = passState.nextPassMs,
                             onUseEmergencyPass = onUsePass
                         )
                     }
@@ -160,9 +151,9 @@ class BlockOverlayActivity : ComponentActivity() {
                             ruleName = ruleName,
                             titlePool = titlePool,
                             subtitlePool = subtitlePool,
-                            canUseEmergencyPass = canUseEmergencyPass,
-                            emergencyLocked = emergencyLocked,
-                            nextPassMs = nextPassMs,
+                            canUseEmergencyPass = passState.canUse,
+                            emergencyLocked = passState.locked,
+                            nextPassMs = passState.nextPassMs,
                             onUseEmergencyPass = onUsePass
                         )
                     }
@@ -177,9 +168,9 @@ class BlockOverlayActivity : ComponentActivity() {
                             onCancel = { navigateHome() },
                             ruleName = ruleName,
                             subtitlePool = subtitlePool,
-                            canUseEmergencyPass = canUseEmergencyPass,
-                            emergencyLocked = emergencyLocked,
-                            nextPassMs = nextPassMs,
+                            canUseEmergencyPass = passState.canUse,
+                            emergencyLocked = passState.locked,
+                            nextPassMs = passState.nextPassMs,
                             onUseEmergencyPass = onUsePass
                         )
                     }
