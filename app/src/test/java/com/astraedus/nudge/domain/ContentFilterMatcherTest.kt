@@ -214,6 +214,89 @@ class ContentFilterMatcherTest {
         assertFalse(ContentFilterMatcher.matchesKeyword("https://giphy.com/gifs/cat", keywords))
     }
 
+    // ---- Removed keywords: ordinary English words that were blocking benign browsing ----
+
+    /**
+     * "escort", "hardcore" and "creampie" were raw substring matches over the whole URL, so
+     * they blocked car reviews, music and recipes. They are gone from BOTH keyword lists —
+     * demoting them to [ContentFilterMatcher.AMBIGUOUS_QUERY_KEYWORDS] would not have helped,
+     * because a whole-word query match still fires on exactly these searches.
+     */
+    private val benignPhraseUrls = listOf(
+        // "escort"
+        "https://www.google.com/search?q=ford+escort+review",
+        "https://www.caranddriver.com/ford/escort",
+        "https://en.wikipedia.org/wiki/Escort_carrier",
+        "https://www.google.com/search?q=police+escort+funeral+procession",
+        "https://www.escortradar.com/products",
+        // "hardcore"
+        "https://www.google.com/search?q=hardcore+punk+bands",
+        "https://en.wikipedia.org/wiki/Hardcore_punk",
+        "https://www.dancarlin.com/hardcore-history-series/",
+        "https://www.google.com/search?q=minecraft+hardcore+mode+tips",
+        // "creampie"
+        "https://www.google.com/search?q=creampie+recipe",
+        "https://www.allrecipes.com/recipe/boston-creampie",
+        // "fetish" — demoted to the opt-in query list, so a URL/article must still pass
+        "https://en.wikipedia.org/wiki/Commodity_fetishism",
+        "https://www.google.com/search?q=commodity+fetishism+marx"
+    )
+
+    @Test
+    fun `benign phrase URLs do not match with strict keywords OFF`() {
+        val blocked = benignPhraseUrls.filter { ContentFilterMatcher.matchesKeyword(it, keywords) }
+        assertTrue("these benign URLs must not trip a default keyword: $blocked", blocked.isEmpty())
+    }
+
+    @Test
+    fun `benign phrase URLs do not match with strict keywords ON either`() {
+        // Strict mode adds the query-scoped ambiguous list. It is aggressive by design, but
+        // it must not resurrect the very tokens we removed for being ordinary words.
+        val blocked = benignPhraseUrls.filter {
+            ContentFilterMatcher.matchesKeyword(it, keywords) ||
+                ContentFilterMatcher.matchesQueryKeyword(it, ContentFilterMatcher.AMBIGUOUS_QUERY_KEYWORDS)
+        }
+        assertTrue("these benign URLs must not trip strict mode either: $blocked", blocked.isEmpty())
+    }
+
+    @Test
+    fun `removed tokens are absent from both keyword lists`() {
+        // The class-level invariant, not three individual cases: an ordinary English word
+        // must never come back as a raw-substring token.
+        for (token in listOf("escort", "hardcore", "creampie")) {
+            assertFalse("$token must not be a default keyword", token in ContentFilterMatcher.DEFAULT_KEYWORDS)
+            assertFalse(
+                "$token must not be a query keyword either",
+                token in ContentFilterMatcher.AMBIGUOUS_QUERY_KEYWORDS
+            )
+        }
+        assertFalse("fetish must not be a raw-substring keyword", "fetish" in ContentFilterMatcher.DEFAULT_KEYWORDS)
+        assertTrue(
+            "fetish should be demoted, not dropped — it is a strong whole-word query signal",
+            "fetish" in ContentFilterMatcher.AMBIGUOUS_QUERY_KEYWORDS
+        )
+    }
+
+    @Test
+    fun `the intended adult searches still match`() {
+        // The removals must not have gutted the filter: an explicit search still blocks.
+        for (url in listOf(
+            "https://www.google.com/search?q=porn",
+            "https://www.google.com/search?q=free+xxx+videos",
+            "https://www.google.com/search?q=hentai",
+            "https://www.bing.com/search?q=chaturbate+cams"
+        )) {
+            assertTrue("$url should still match", ContentFilterMatcher.matchesKeyword(url, keywords))
+        }
+        // And the demoted token still works in strict mode.
+        assertTrue(
+            ContentFilterMatcher.matchesQueryKeyword(
+                "https://www.google.com/search?q=fetish",
+                ContentFilterMatcher.AMBIGUOUS_QUERY_KEYWORDS
+            )
+        )
+    }
+
     // ---- extractSearchQuery ----
 
     @Test

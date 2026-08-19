@@ -55,14 +55,29 @@ object ContentFilterMatcher {
      *  - Every token here is either a coined/brand term (xvideos, xhamster,
      *    redtube, brazzers, pornhub) that has no mainstream-word collision, or a
      *    long compound unlikely to appear inside a benign domain/path
-     *    ("camgirl", "escort", "hardcore"). "milf" / "hentai" / "nsfw" / "nude" /
-     *    "porn" / "xxx" are strong and effectively never substrings of
-     *    legitimate site URLs people browse.
+     *    ("camgirl", "gangbang"). "milf" / "hentai" / "nsfw" / "porn" / "xxx" are
+     *    strong and effectively never substrings of legitimate site URLs people
+     *    browse.
      *  - "xxx" is kept because it is overwhelmingly adult-signalling; the only
      *    benign collisions ("xxxl" sizing) are rare in URLs and acceptable.
      *  - These are SUBSTRING matches on the full URL (host + path + query), so a
      *    search like "google.com/search?q=porn" or an unknown domain
      *    "freepornsite.tld" is caught even when the domain isn't in the list.
+     *
+     * The bar for membership is: **would this token plausibly appear in a benign URL,
+     * or in a search a normal person makes?** If yes, it does not belong here. Four
+     * tokens were removed for failing that test — they are ordinary English words that
+     * happen to also be adult jargon:
+     *  - "escort"   — ford escort, police escort, escort carrier, Escort radar detectors.
+     *  - "hardcore" — hardcore punk, Hardcore History, hardcore difficulty modes.
+     *  - "creampie" — recipe slugs (`/recipes/coconut-creampie`).
+     *  - "fetish"   — `wikipedia.org/wiki/Commodity_fetishism`, psychology writing.
+     * The first three are gone entirely rather than demoted to
+     * [AMBIGUOUS_QUERY_KEYWORDS], because a whole-word query match would still fire on
+     * exactly the benign searches we are protecting ("ford escort review", "hardcore
+     * punk bands", "creampie recipe") — demotion would buy nothing. "fetish" IS demoted:
+     * as a whole word in a search query it is a strong signal, and it does not collide
+     * with "fetishism"/"fetishist" under whole-word matching.
      */
     val DEFAULT_KEYWORDS: List<String> = listOf(
         "porn",
@@ -80,14 +95,10 @@ object ContentFilterMatcher {
         "camgirl",
         "camsoda",
         "chaturbate",
-        "escort",
         "milf",
-        "hardcore",
         "bukkake",
-        "fetish",
         "bdsm",
         "deepthroat",
-        "creampie",
         "cumshot",
         "blowjob",
         "handjob",
@@ -132,10 +143,13 @@ object ContentFilterMatcher {
      *
      * Curation: only genuinely-wanted-but-ambiguous tokens whose whole-word match in a
      * search query is a strong signal. We deliberately skip tokens too collision-prone
-     * even as a whole word (e.g. bare "dp", which appears innocently in countless queries).
+     * even as a whole word (e.g. bare "dp", which appears innocently in countless queries,
+     * and "escort"/"hardcore"/"creampie", whose benign whole-word searches — "ford escort
+     * review", "hardcore punk bands", "creampie recipe" — are exactly what we protect).
      */
     val AMBIGUOUS_QUERY_KEYWORDS: List<String> = listOf(
         "bbc",
+        "fetish",
         "bwc",
         "bbw",
         "pawg",

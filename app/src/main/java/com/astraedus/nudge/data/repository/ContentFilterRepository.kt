@@ -12,7 +12,7 @@ import javax.inject.Singleton
 
 /**
  * Small abstraction over the content-filter check so callers (e.g. the use case)
- * can be unit-tested without loading the ~274k-entry bundled asset.
+ * can be unit-tested without touching the bundled asset.
  */
 interface ContentFilter {
     /**
@@ -25,20 +25,18 @@ interface ContentFilter {
 }
 
 /**
- * Loads the bundled blocklist (`assets/content_filter_domains.txt`,
- * ~274k newline-separated lowercased base domains) into an in-memory set on
- * first use and answers content-filter queries.
+ * Loads the bundled blocklist (`assets/content_filter_domains.txt`, a hand-curated
+ * few-hundred-entry list of lowercased base domains) into an in-memory set on first
+ * use and answers content-filter queries.
  *
  * Loading is:
  *  - lazy (first [isBlocked] call, NOT app/service start),
  *  - off the main thread (Dispatchers.IO),
  *  - guarded by a [Mutex] so concurrent first-callers load exactly once.
  *
- * Memory: a HashSet<String> of ~274k base domains is acceptable on our low-end
- * target (Pixel 3). We load with a buffered reader and pre-size the set to avoid
- * rehashing. A sorted-array + binary-search would trade a little CPU per lookup
- * for lower per-entry object overhead, but the HashSet keeps lookups O(1) and the
- * footprint is well within budget, so we keep it simple.
+ * Blank lines and `#` comment lines are skipped, so the asset can carry its own
+ * curation policy inline — which is the whole point after a 274k-entry upstream blob
+ * silently blocked virginia.gov, purdue.edu and every site hosted on amazonaws.com.
  */
 @Singleton
 class ContentFilterRepository @Inject constructor(
@@ -70,14 +68,10 @@ class ContentFilterRepository @Inject constructor(
     }
 
     private fun loadFromAssets(): Set<String> {
-        // Pre-size to avoid rehashing the ~274k entries during load.
-        val set = HashSet<String>(400_000)
+        val set = HashSet<String>(1_024)
         return try {
             context.assets.open(ASSET_NAME).bufferedReader().useLines { lines ->
-                lines.forEach { line ->
-                    val trimmed = line.trim()
-                    if (trimmed.isNotEmpty()) set.add(trimmed)
-                }
+                lines.forEach { line -> parseLine(line)?.let(set::add) }
             }
             set
         } catch (_: Exception) {
@@ -89,5 +83,19 @@ class ContentFilterRepository @Inject constructor(
 
     companion object {
         private const val ASSET_NAME = "content_filter_domains.txt"
+
+        /**
+         * One asset line -> a blocklist entry, or null for a line that carries none.
+         * Blank lines and `#` comments are skipped so the curated asset can document
+         * its own inclusion policy inline.
+         *
+         * Exposed so the asset-hygiene test parses the shipped file exactly the way the
+         * app does — a test with its own parser would be testing the wrong bytes.
+         */
+        internal fun parseLine(line: String): String? {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) return null
+            return trimmed
+        }
     }
 }

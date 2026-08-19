@@ -2,6 +2,16 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.10.1] - unreleased
+
+### Fixed
+- **"Block restricted websites" no longer over-blocks.** The filter shipped with a huge third-party blocklist that turned out to be badly wrong about ordinary sites: a US state government portal, several universities and an international standards body were all on it — and, because blocking a domain also blocks everything under it, entries for major hosting and blogging platforms quietly blocked *every* site hosted on them. It has been replaced with a hand-curated list — a few hundred entries instead of a few hundred thousand, each one individually justifiable. If a site you use was being blocked for no good reason, this is why.
+- **Ordinary words are no longer matched inside web addresses.** The filter also looked for a list of words anywhere in a URL, and a few of them are perfectly normal English — the name of a car model, a music genre, and a dessert. Searching for any of those got you a block screen. Those words are gone; the unambiguous ones stay, so genuinely explicit addresses and searches are still caught.
+- Government, university and military domains can now never appear in the filter's list — enforced by a test, along with a size ceiling so a bulk list can't be dropped back in.
+
+### Changed
+- The app is about 4.5MB smaller.
+
 ## [1.10.0] - 2026-07-27
 
 ### Added
