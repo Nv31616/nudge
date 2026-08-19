@@ -210,6 +210,9 @@ class ActiveRulesViewModel @Inject constructor(
 
         private fun formatMode(mode: String, delaySeconds: Int): String {
             return when (mode) {
+                // The app itself is not gated; only this rule's feature overrides and daily limit
+                // are. Without this branch the list rendered the raw enum name "NONE" at the user.
+                "NONE" -> "Not blocked"
                 "HARD_BLOCK" -> "Hard Block"
                 "DELAY" -> "Delay ${delaySeconds}s"
                 "BREATHING" -> "Breathing ${delaySeconds}s"

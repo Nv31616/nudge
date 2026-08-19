@@ -140,4 +140,27 @@ class EvaluateBlockDailyLimitTest {
 
         assertEquals(BlockMode.DELAY, (decision as BlockDecision.Block).mode)
     }
+
+    /**
+     * `getDailyForegroundTimeMs` is a binder call that pulls the whole device's event log for the
+     * day and filters it in Kotlin, and it runs on the accessibility hot path. When no rule carries
+     * a daily limit the engine cannot consult the number, so it must not be fetched at all. The
+     * mock is non-relaxed and that method is deliberately left unstubbed here: calling it throws.
+     */
+    @Test
+    fun `usage is not read when no rule has a daily limit`() = runTest {
+        val rule = BlockRule(
+            id = 1L,
+            packageName = pkg,
+            mode = BlockMode.DELAY.name,
+            delaySeconds = 15,
+            dailyLimitMinutes = null,
+            enabled = true
+        )
+        every { blockRuleRepository.getEnabledRules() } returns flowOf(listOf(rule))
+
+        val decision = useCase.invoke(pkg)
+
+        assertEquals(BlockMode.DELAY, (decision as BlockDecision.Block).mode)
+    }
 }

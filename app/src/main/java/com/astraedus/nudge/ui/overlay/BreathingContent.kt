@@ -67,9 +67,6 @@ fun BreathingContent(
     // it survives a pause, and accumulated per visible segment rather than measured from a single
     // start timestamp — otherwise time spent away from the overlay would still count down (#8).
     var elapsedMs by remember { mutableLongStateOf(0L) }
-    // Mirror dailyTimeRemainingMs as mutable state so the "X left today" line ticks down alongside
-    // the breathing progress instead of showing a frozen snapshot.
-    var shownDailyRemainingMs by remember { mutableStateOf(dailyTimeRemainingMs) }
 
     // repeatOnLifecycle cancels the block below RESUMED and starts a NEW one from the top on
     // re-entry. Once elapsedMs has covered totalMs, the first tick() of that new block would
@@ -87,14 +84,12 @@ fun BreathingContent(
             // bar, and report whether the exercise is finished.
             fun tick(): Boolean {
                 val now = System.currentTimeMillis()
-                val delta = (now - segmentStart).coerceAtLeast(0L)
                 elapsedMs = advanceBreathingElapsed(elapsedMs, segmentStart, now)
                 segmentStart = now
                 overallProgress = breathingProgress(elapsedMs, totalMs)
-                // Tick the daily-remaining display down by the same wall-clock delta.
-                shownDailyRemainingMs = shownDailyRemainingMs?.let {
-                    (it - delta).coerceAtLeast(0L)
-                }
+                // "X left today" is deliberately NOT ticked down here: while this overlay is up the
+                // blocked app is paused, so UsageStatsManager accrues nothing against the budget.
+                // Draining the display would show the user spending time they are not spending.
                 return isBreathingComplete(elapsedMs, totalMs)
             }
 
@@ -147,11 +142,11 @@ fun BreathingContent(
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                if (shownDailyRemainingMs != null && dailyLimitMinutes != null && dailyLimitMinutes > 0) {
+                if (dailyTimeRemainingMs != null && dailyLimitMinutes != null && dailyLimitMinutes > 0) {
                     Text(
-                        text = "${formatDuration(shownDailyRemainingMs!!)} left today",
+                        text = "${formatDuration(dailyTimeRemainingMs)} left today",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = timeRemainingColor(shownDailyRemainingMs!!, dailyLimitMinutes)
+                        color = timeRemainingColor(dailyTimeRemainingMs, dailyLimitMinutes)
                     )
                 }
                 Spacer(modifier = Modifier.height(16.dp))

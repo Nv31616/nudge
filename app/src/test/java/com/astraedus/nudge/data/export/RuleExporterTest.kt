@@ -3,6 +3,7 @@ package com.astraedus.nudge.data.export
 import com.astraedus.nudge.data.db.entity.AppGroup
 import com.astraedus.nudge.data.db.entity.AppGroupMember
 import com.astraedus.nudge.data.db.entity.BlockRule
+import com.astraedus.nudge.domain.model.BlockMode
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -18,6 +19,53 @@ class RuleExporterTest {
     @Before
     fun setUp() {
         exporter = RuleExporter()
+    }
+
+    /**
+     * The class-level invariant, not the BlockMode.NONE instance of it: anything the app can EXPORT
+     * must survive being IMPORTED back. Import validated against a hand-written mode whitelist that
+     * went stale when NONE was added, and because one bad rule aborts the whole array, a single
+     * NONE rule made an entire backup unrestorable. Iterating BlockMode here means the next mode
+     * added fails this test instead of silently eating a user's rules.
+     */
+    @Test
+    fun `every block mode survives an export-import round trip`() {
+        BlockMode.entries.forEach { mode ->
+            val rules = listOf(
+                BlockRule(
+                    id = 1,
+                    packageName = "com.instagram.android",
+                    mode = mode.name,
+                    delaySeconds = 15,
+                    enabled = true
+                )
+            )
+
+            val json = exporter.exportRules(rules, emptyList(), emptyMap())
+            val result = exporter.importRules(json)
+
+            assertNull("mode ${mode.name} failed to import: ${result.error}", result.error)
+            assertEquals("mode ${mode.name} was dropped on import", 1, result.rules.size)
+            assertEquals(mode.name, result.rules.first().mode)
+        }
+    }
+
+    /**
+     * A backup with one unrecognized mode must not take the recognizable rules down with it -- the
+     * pre-existing eager parse made a single bad entry cost the user every rule AND every group.
+     */
+    @Test
+    fun `an unknown block mode is still rejected`() {
+        val json = exporter.exportRules(
+            listOf(BlockRule(id = 1, packageName = "com.x", mode = "TELEPORT", delaySeconds = 15)),
+            emptyList(),
+            emptyMap()
+        )
+
+        val result = exporter.importRules(json)
+
+        assertNotNull(result.error)
+        assertTrue(result.error!!.contains("TELEPORT"))
     }
 
     @Test

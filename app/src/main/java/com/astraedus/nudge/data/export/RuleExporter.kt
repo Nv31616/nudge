@@ -3,6 +3,7 @@ package com.astraedus.nudge.data.export
 import com.astraedus.nudge.data.db.entity.AppGroup
 import com.astraedus.nudge.data.db.entity.AppGroupMember
 import com.astraedus.nudge.data.db.entity.BlockRule
+import com.astraedus.nudge.domain.model.BlockMode
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -21,6 +22,15 @@ class RuleExporter @Inject constructor() {
 
     companion object {
         private const val CURRENT_VERSION = 1
+
+        /**
+         * Accepted values for a rule's `mode` on import, derived from [BlockMode] rather than
+         * hand-listed. A hardcoded list silently goes stale the moment a mode is added: BlockMode.NONE
+         * shipped without updating it, and because [parseRule] throws inside an eager map over the
+         * whole array, ONE unrecognized rule aborted the ENTIRE import -- every rule and every group
+         * lost, on the app's only backup mechanism. Deriving it means that class of bug cannot recur.
+         */
+        private val VALID_MODES: Set<String> = BlockMode.entries.mapTo(mutableSetOf()) { it.name }
     }
 
     /**
@@ -168,7 +178,7 @@ class RuleExporter @Inject constructor() {
 
     private fun parseRule(obj: JSONObject): ExportedRule {
         val mode = obj.getString("mode")
-        require(mode in listOf("HARD_BLOCK", "DELAY", "BREATHING")) {
+        require(mode in VALID_MODES) {
             "Unknown block mode: $mode"
         }
 

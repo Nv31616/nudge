@@ -73,7 +73,7 @@ class EvaluateBlockUseCase @Inject constructor(
         }
 
         val activeRules = ruleEvaluator.resolveRulesForPackage(packageName, ruleDataList, memberships)
-        val dailyUsageMs = dailyUsageMs(packageName)
+        val dailyUsageMs = dailyUsageMs(packageName, activeRules)
 
         return blockEngine.evaluate(
             packageName = packageName,
@@ -124,7 +124,7 @@ class EvaluateBlockUseCase @Inject constructor(
 
         // Use the first matching rule's package for usage stats lookup
         val trackingPackage = matchingRules.first().packageName ?: "web"
-        val dailyUsageMs = dailyUsageMs(trackingPackage)
+        val dailyUsageMs = dailyUsageMs(trackingPackage, activeRules)
 
         val decision = blockEngine.evaluate(
             packageName = trackingPackage,
@@ -159,7 +159,6 @@ class EvaluateBlockUseCase @Inject constructor(
         // Track usage under a synthetic "web" package, consistent with how
         // web-domain rules without an associated app are tracked.
         val trackingPackage = "web"
-        val dailyUsageMs = dailyUsageMs(trackingPackage)
 
         val activeRule = ActiveRule(
             mode = mode,
@@ -174,7 +173,7 @@ class EvaluateBlockUseCase @Inject constructor(
         val decision = blockEngine.evaluate(
             packageName = trackingPackage,
             activeRules = listOf(activeRule),
-            dailyUsageMs = dailyUsageMs
+            dailyUsageMs = dailyUsageMs(trackingPackage, listOf(activeRule))
         )
 
         return WebDomainBlockResult(decision, trackingPackage)
@@ -194,9 +193,18 @@ class EvaluateBlockUseCase @Inject constructor(
      * The read is a synchronous binder call, hence [Dispatchers.IO]; it returns 0 without throwing
      * when Usage Access has not been granted, which fails toward *allowing* the app. That is the
      * right direction: a permission the user has not granted must not manufacture a block.
+     *
+     * Skipped entirely when no rule in [rules] carries a daily limit, because then [BlockEngine]
+     * cannot consult the number. That matters: unlike the local Room `SUM()` this replaced,
+     * `queryEvents` returns the whole device's event log for the day and is filtered in Kotlin, and
+     * this runs on the accessibility hot path (debounced to ~1/s per package, re-entered on every
+     * content change while a feed is being scrolled). Paying for it on a 3GB Pixel 3 when the
+     * result is provably discarded is the kind of cost that shows up as jank.
      */
-    private suspend fun dailyUsageMs(packageName: String): Long =
-        withContext(Dispatchers.IO) { usageRepository.getDailyForegroundTimeMs(packageName) }
+    private suspend fun dailyUsageMs(packageName: String, rules: List<ActiveRule>): Long {
+        if (rules.none { it.dailyLimitMinutes != null }) return 0L
+        return withContext(Dispatchers.IO) { usageRepository.getDailyForegroundTimeMs(packageName) }
+    }
 
     private fun buildWebDomainRuleName(packageName: String?, mode: String): String {
         val modeName = when (mode) {

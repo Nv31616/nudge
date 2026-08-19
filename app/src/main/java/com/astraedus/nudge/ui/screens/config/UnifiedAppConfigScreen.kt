@@ -329,12 +329,24 @@ fun UnifiedAppConfigScreen(
                         )
                     }
                     Switch(
-                        checked = state.webDomainEnabled,
+                        checked = state.webDomainEnabled && state.blocksWholeApp,
+                        enabled = state.blocksWholeApp,
                         onCheckedChange = viewModel::setWebDomainEnabled
                     )
                 }
 
-                if (state.webDomainEnabled) {
+                // A web-domain rule is evaluated through the SAME app-level mode, so with the app
+                // itself set to NONE the engine allows the site too. Rather than show a switch that
+                // silently enforces nothing, say why it is unavailable.
+                if (!state.blocksWholeApp) {
+                    Text(
+                        "Needs \"Block the whole app\" on — web blocking uses the same block mode.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                if (state.webDomainEnabled && state.blocksWholeApp) {
                     OutlinedTextField(
                         value = state.webDomains,
                         onValueChange = viewModel::setWebDomains,

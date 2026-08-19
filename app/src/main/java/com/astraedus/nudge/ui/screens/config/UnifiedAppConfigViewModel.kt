@@ -416,8 +416,9 @@ class UnifiedAppConfigViewModel @Inject constructor(
 
     /**
      * Turn whole-app blocking on/off. Off writes [BlockMode.NONE] on the app-level rule, which
-     * keeps the daily limit, counter, overlays, grayscale and web domains intact while letting the
-     * app itself open — the combination needed to block only Shorts/Reels.
+     * keeps the daily limit, counter and overlays intact while letting the app itself open — the
+     * combination needed to block only Shorts/Reels. Grayscale and web-domain blocking do NOT
+     * survive the switch; see [BlockMode.NONE].
      */
     fun setBlocksWholeApp(blocks: Boolean) {
         val current = _uiState.value
