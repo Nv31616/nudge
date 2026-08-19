@@ -23,8 +23,9 @@ import org.junit.Test
 
 /**
  * Use-case level tests for the generic content-filter fallback in
- * [EvaluateBlockUseCase.evaluateWebDomain]. The 274k-entry asset is NEVER loaded
- * here — [ContentFilter] is mocked so we exercise wiring only.
+ * [EvaluateBlockUseCase.evaluateWebDomain]. The bundled asset is NEVER loaded here —
+ * [ContentFilter] is mocked so we exercise wiring only. (The asset's own contents are
+ * gated by `ContentFilterAssetTest`.)
  */
 class EvaluateBlockContentFilterTest {
 
