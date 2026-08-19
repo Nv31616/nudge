@@ -2,9 +2,18 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.10.1] - unreleased
+## [1.11.0] - unreleased
+
+### Added
+- **"Block only the parts you choose"** (contributed by [@polubarev](https://github.com/polubarev)): a new "Block the whole app" switch lets a rule block just an app's features — YouTube Shorts, Instagram Reels — without blocking the app itself. Switch it off and the rule keeps carrying your daily limit, counters and overlays while leaving the app itself alone. Requested by a user who wanted Shorts/Reels-only blocking and got both apps blocked entirely. Strict Mode treats switching whole-app blocking off as a weakening, so it's challenge-gated.
 
 ### Fixed
+- **Daily time limits now actually count your time** ([#14](https://github.com/astraedus/nudge/issues/14), fixed by @polubarev). The daily budget was read from a data column nothing ever wrote, so for most rules the limit could never trigger — it only worked if the rule also showed the time-remaining overlay. Every rule with a daily limit now counts real screen time.
+- **Reels opened from DMs are now blocked** (@polubarev). Instagram's reel player is detected directly rather than by which tab is selected, so a reel opened from a DM no longer plays freely under a hard block.
+- **Wrong timers on back-to-back blocks** ([#15](https://github.com/astraedus/nudge/issues/15), fixed by @polubarev). Switching between two blocked apps no longer shows the new app's name over the old app's countdown with a frozen progress ring — each block gets its own fresh screen. This also closes a real bypass: a nearly-finished countdown could previously grant entry to a freshly blocked app after about a second.
+- **Backups can't be destroyed by the new mode** (found in review): importing a backup containing a "whole app off" rule no longer silently discards every rule in the file.
+- The "Block on web too" toggle now explains itself and disables when whole-app blocking is off, instead of appearing to protect you while enforcing nothing.
+- Daily-limit checks no longer scan device usage on every app switch when no rule has a daily limit — smoother on older phones.
 - **"Block restricted websites" no longer over-blocks.** The filter shipped with a huge third-party blocklist that turned out to be badly wrong about ordinary sites: a US state government portal, several universities and an international standards body were all on it — and, because blocking a domain also blocks everything under it, entries for major hosting and blogging platforms quietly blocked *every* site hosted on them. It has been replaced with a hand-curated list — a few hundred entries instead of a few hundred thousand, each one individually justifiable. If a site you use was being blocked for no good reason, this is why.
 - **Ordinary words are no longer matched inside web addresses.** The filter also looked for a list of words anywhere in a URL, and a few of them are perfectly normal English — the name of a car model, a music genre, and a dessert. Searching for any of those got you a block screen. Those words are gone; the unambiguous ones stay, so genuinely explicit addresses and searches are still caught.
 - Government, university and military domains can now never appear in the filter's list — enforced by a test, along with a size ceiling so a bulk list can't be dropped back in.
