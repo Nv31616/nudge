@@ -2,7 +2,7 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.11.0] - unreleased
+## [1.11.0] - 2026-08-19
 
 ### Added
 - **"Block only the parts you choose"** (contributed by [@polubarev](https://github.com/polubarev)): a new "Block the whole app" switch lets a rule block just an app's features — YouTube Shorts, Instagram Reels — without blocking the app itself. Switch it off and the rule keeps carrying your daily limit, counters and overlays while leaving the app itself alone. Requested by a user who wanted Shorts/Reels-only blocking and got both apps blocked entirely. Strict Mode treats switching whole-app blocking off as a weakening, so it's challenge-gated.
