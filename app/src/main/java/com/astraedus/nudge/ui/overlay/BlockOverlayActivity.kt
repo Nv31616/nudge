@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.key
 import androidx.lifecycle.Lifecycle
 import com.astraedus.nudge.data.db.entity.UsageEvent
 import com.astraedus.nudge.data.preferences.NudgePreferences
@@ -29,6 +30,14 @@ class BlockOverlayActivity : ComponentActivity() {
     @Inject lateinit var passthroughManager: PassthroughManager
     @Inject lateinit var nudgePreferences: NudgePreferences
     @Inject lateinit var emergencyPassManager: EmergencyPassManager
+
+    /**
+     * Incremented on every [render] so each delivered block composes under a fresh [key], discarding
+     * the previous block's remembered countdown state. A counter rather than the block's contents:
+     * two different apps can legitimately share a package-mode-delay triple, and re-delivering the
+     * *same* block is still a new attempt that must start from full.
+     */
+    private var renderToken = 0
 
     companion object {
         const val EXTRA_BLOCK_MODE = "block_mode"
@@ -67,6 +76,16 @@ class BlockOverlayActivity : ComponentActivity() {
         } catch (_: IllegalArgumentException) {
             BlockMode.HARD_BLOCK
         }
+        // BlockMode.NONE blocks nothing, so BlockEngine never produces a Block carrying it and this
+        // activity should never be launched for one. If it somehow is, dismiss rather than render:
+        // there is no "no-op overlay", and showing any of the three below would gate an app the
+        // user explicitly chose not to gate.
+        if (mode == BlockMode.NONE) {
+            NudgeAccessibilityService.isOverlayActive = false
+            finish()
+            return
+        }
+
         val delaySeconds = intent.getIntExtra(EXTRA_DELAY_SECONDS, 15)
         val packageName = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: ""
         val ruleName = intent.getStringExtra(EXTRA_RULE_NAME)
@@ -121,9 +140,28 @@ class BlockOverlayActivity : ComponentActivity() {
             finish()
         }
 
+        // Issue #15: a block delivered while the overlay is already up arrives via onNewIntent, and
+        // setContent on an existing ComposeView REUSES the composition — same call positions, so
+        // every `remember` slot survives. The new block's appLabel and delaySeconds are parameters
+        // and update, but the countdown state does not, so the overlay showed the NEW app's name
+        // over the PREVIOUS app's remaining seconds. The progress ring froze too, because
+        // `remainingSeconds / delaySeconds` went off-scale (30 remaining over a 15s delay = 2.0).
+        //
+        // Keying the subtree on a per-delivery token discards all remembered state for a new block.
+        // Done once here rather than by keying individual `remember` calls: this covers all three
+        // overlays at once, and a per-`remember` key would have to be derived from the block's
+        // identity anyway — keying on delaySeconds alone is NOT enough, since two apps sharing the
+        // default 15s delay would still hand each other stale state.
+        val blockToken = ++renderToken
+
         setContent {
             NudgeTheme {
+                key(blockToken) {
                 when (mode) {
+                    // Unreachable: the early return above already finished us. Present so the
+                    // `when` stays exhaustive and a future mode cannot silently fall through.
+                    BlockMode.NONE -> Unit
+
                     BlockMode.HARD_BLOCK -> {
                         HardBlockContent(
                             packageName = packageName,
@@ -174,6 +212,7 @@ class BlockOverlayActivity : ComponentActivity() {
                             onUseEmergencyPass = onUsePass
                         )
                     }
+                }
                 }
             }
         }
