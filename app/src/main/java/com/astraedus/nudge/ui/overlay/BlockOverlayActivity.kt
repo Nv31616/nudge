@@ -6,30 +6,37 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.key
 import androidx.lifecycle.Lifecycle
-import com.astraedus.nudge.data.db.entity.UsageEvent
 import com.astraedus.nudge.data.preferences.NudgePreferences
-import com.astraedus.nudge.data.repository.UsageRepository
 import com.astraedus.nudge.domain.emergency.EmergencyPass
+import com.astraedus.nudge.domain.logging.NudgeLog
 import com.astraedus.nudge.domain.model.BlockMode
+import com.astraedus.nudge.domain.usecase.RecordWalkAwayUseCase
 import com.astraedus.nudge.service.EmergencyPassManager
 import com.astraedus.nudge.service.NudgeAccessibilityService
 import com.astraedus.nudge.service.PassthroughManager
 import com.astraedus.nudge.ui.theme.NudgeTheme
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class BlockOverlayActivity : ComponentActivity() {
 
-    @Inject lateinit var usageRepository: UsageRepository
     @Inject lateinit var passthroughManager: PassthroughManager
     @Inject lateinit var nudgePreferences: NudgePreferences
     @Inject lateinit var emergencyPassManager: EmergencyPassManager
+    @Inject lateinit var recordWalkAway: RecordWalkAwayUseCase
+    @Inject lateinit var nudgeLogger: NudgeLog
+
+    /**
+     * Set the first time this activity terminates as a walk-away, so [navigateHome] logs exactly
+     * one event per attempt no matter how many times it is reached (button + back button, or a
+     * double tap). Not reset by [render]: a re-delivered block is a NEW attempt, but it also
+     * arrives on an activity that has not walked away yet — once we have, we are finishing.
+     */
+    private val walkedAway = AtomicBoolean(false)
 
     /**
      * Incremented on every [render] so each delivered block composes under a fresh [key], discarding
@@ -259,27 +266,63 @@ class BlockOverlayActivity : ComponentActivity() {
         finish()
     }
 
+    /**
+     * The user walked away: record it, then leave the blocked app behind.
+     *
+     * Reached from the "I changed my mind" / "Go Back" button on all three overlays and from the
+     * back button. Deliberately does NOT grant passthrough — turning around is not permission to
+     * enter, so the next attempt gets a fresh, full block.
+     *
+     * Three properties this path owes, each of which used to be missing:
+     *
+     *  - **Exactly one event.** [walkedAway] gates the whole body, so a double tap, or a tap racing
+     *     the back button, cannot log two walk-aways for one attempt. (The countdown cannot also
+     *     fire: [onTimerComplete] is the only other terminal path and it `finish()`es, while the
+     *     ticker is cancelled below RESUMED.)
+     *  - **A write that survives us.** [RecordWalkAwayUseCase] is a process-lifetime singleton, so
+     *     the insert is not tied to this activity, which is destroyed microseconds later.
+     *  - **Actually landing on the launcher.** A bare `startActivity(HOME)` raced our own
+     *     [finish]: this activity is singleInstance in its own task with an empty taskAffinity, so
+     *     finishing pops back to the task underneath — the blocked app — and whichever of the two
+     *     the system got to first decided where the user ended up. That is the backlog item
+     *     "'I changed my mind' can leave the user inside the blocked app". The accessibility
+     *     service's `GLOBAL_ACTION_HOME` does not race us and is not subject to background
+     *     activity-start restrictions; it is already the way [EmergencyPassManager],
+     *     `AutoKickExecutor` and `StrictModeGuardActivity` go home. The HOME intent stays as the
+     *     fallback for when the service is not connected.
+     */
     private fun navigateHome() {
-        // Log that user changed their mind
+        if (!walkedAway.compareAndSet(false, true)) return
+
         val pkg = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: ""
         val mode = intent.getStringExtra(EXTRA_BLOCK_MODE) ?: ""
-        CoroutineScope(Dispatchers.IO).launch {
-            usageRepository.logEvent(
-                UsageEvent(
-                    packageName = pkg,
-                    wasBlocked = true,
-                    blockMode = mode,
-                    userChangedMind = true
-                )
-            )
-        }
+        recordWalkAway.record(packageName = pkg, blockMode = mode)
 
-        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        startActivity(homeIntent)
+        // The block is over the moment the user turns around; leaving the flag set until onDestroy
+        // left a window in which the service still believed an overlay was up. onTimerComplete
+        // already clears it here rather than relying on onDestroy, and so should this path.
+        NudgeAccessibilityService.markOverlayInactive()
+        goHome()
         finish()
+    }
+
+    /**
+     * Send the user to the launcher. Prefers the accessibility service's `GLOBAL_ACTION_HOME`;
+     * falls back to a HOME intent when the service is not connected. Never throws — failing to log
+     * is a lost stat, but failing to leave would trap the user in the app they walked away from.
+     */
+    private fun goHome() {
+        if (NudgeAccessibilityService.requestGoHome()) return
+        try {
+            startActivity(
+                Intent(Intent.ACTION_MAIN).apply {
+                    addCategory(Intent.CATEGORY_HOME)
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+            )
+        } catch (e: Exception) {
+            nudgeLogger.e("walk-away could not go home", e)
+        }
     }
 
     override fun onDestroy() {
