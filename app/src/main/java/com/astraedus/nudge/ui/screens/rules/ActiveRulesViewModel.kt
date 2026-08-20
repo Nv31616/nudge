@@ -4,20 +4,22 @@ import android.graphics.drawable.Drawable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.astraedus.nudge.data.db.entity.BlockRule
-import com.astraedus.nudge.data.export.ImportResult
 import com.astraedus.nudge.data.preferences.NudgePreferences
 import com.astraedus.nudge.data.repository.BlockRuleRepository
 import com.astraedus.nudge.data.repository.InstalledAppsRepository
 import com.astraedus.nudge.domain.lock.ChallengeState
 import com.astraedus.nudge.domain.usecase.ExportRulesUseCase
 import com.astraedus.nudge.domain.usecase.ImportOutcome
+import com.astraedus.nudge.domain.usecase.ImportPreview
 import com.astraedus.nudge.domain.usecase.ImportRulesUseCase
 import com.astraedus.nudge.ui.lock.StrictModeGate
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.Immutable
 import javax.inject.Inject
 
@@ -36,7 +38,7 @@ data class ActiveRulesUiState(
     val groups: List<ActiveRulesGroup> = emptyList(),
     val isLoading: Boolean = true,
     val exportJson: String? = null,
-    val importPreview: ImportResult? = null,
+    val importPreview: ImportPreview? = null,
     val importOutcome: ImportOutcome? = null,
     val importError: String? = null
 )
@@ -133,19 +135,37 @@ class ActiveRulesViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(exportJson = null)
     }
 
-    fun previewImport(json: String) {
-        val result = importRulesUseCase.preview(json)
-        if (result.error != null) {
-            _uiState.value = _uiState.value.copy(importError = result.error, importPreview = null)
-        } else {
-            _uiState.value = _uiState.value.copy(importPreview = result, importError = null)
+    /**
+     * Reads and previews an import file.
+     *
+     * [readJson] is a lambda rather than a String because the file is read on the IO dispatcher
+     * here: an export now carries the user's whole block history, so both the read and the parse
+     * are unbounded work that used to run on the UI thread from the file-picker callback.
+     */
+    fun previewImport(readJson: suspend () -> String?) {
+        viewModelScope.launch {
+            val json = withContext(Dispatchers.IO) { readJson() }
+            if (json == null) {
+                _uiState.value = _uiState.value.copy(
+                    importError = "Could not read that file.",
+                    importPreview = null
+                )
+                return@launch
+            }
+            val preview = importRulesUseCase.preview(json)
+            val error = preview.result.error
+            _uiState.value = if (error != null) {
+                _uiState.value.copy(importError = error, importPreview = null)
+            } else {
+                _uiState.value.copy(importPreview = preview, importError = null)
+            }
         }
     }
 
     fun confirmImport() {
         val preview = _uiState.value.importPreview ?: return
         viewModelScope.launch {
-            val outcome = importRulesUseCase.execute(preview)
+            val outcome = importRulesUseCase.execute(preview.result)
             _uiState.value = _uiState.value.copy(
                 importOutcome = outcome,
                 importPreview = null

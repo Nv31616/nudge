@@ -3,11 +3,16 @@ package com.astraedus.nudge.domain.usecase
 import com.astraedus.nudge.data.db.entity.AppGroup
 import com.astraedus.nudge.data.db.entity.AppGroupMember
 import com.astraedus.nudge.data.db.entity.BlockRule
+import com.astraedus.nudge.data.export.ExportedHistoryEvent
 import com.astraedus.nudge.data.export.ExportedRule
+import com.astraedus.nudge.data.export.HistoryMerge
 import com.astraedus.nudge.data.export.ImportResult
 import com.astraedus.nudge.data.export.RuleExporter
 import com.astraedus.nudge.data.repository.BlockRuleRepository
+import com.astraedus.nudge.data.repository.UsageRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
@@ -24,19 +29,43 @@ data class ImportOutcome(
     val invalidCount: Int = 0,
     /** One human-readable reason per skipped entry, in file order. */
     val invalidReasons: List<String> = emptyList(),
+    /** History events written to `usage_events`. */
+    val historyImportedCount: Int = 0,
+    /** History events already present (same package + timestamp + flags), so not re-added. */
+    val historyDuplicateCount: Int = 0,
+    /** History events in the file that could not be read at all. */
+    val historyInvalidCount: Int = 0,
     val error: String? = null
+)
+
+/**
+ * What an import WOULD do, shown to the user before anything is written.
+ *
+ * [newHistoryCount] is separate from `result.history.size` because history merges: restoring the
+ * same backup twice is legitimate and must read as "0 new", not as a threat to double every stat.
+ */
+data class ImportPreview(
+    val result: ImportResult,
+    val newHistoryCount: Int
 )
 
 class ImportRulesUseCase @Inject constructor(
     private val repository: BlockRuleRepository,
+    private val usageRepository: UsageRepository,
     private val exporter: RuleExporter
 ) {
 
     /**
-     * Parses and validates JSON without inserting. Returns ImportResult for preview.
+     * Parses and validates JSON without inserting, and asks the DB how much of the file's history
+     * is actually new.
+     *
+     * Suspending and off-main: history is unbounded (retention is not enforced), so parsing a
+     * heavy user's backup on the UI thread is an ANR.
      */
-    fun preview(json: String): ImportResult {
-        return exporter.importRules(json)
+    suspend fun preview(json: String): ImportPreview {
+        val result = withContext(Dispatchers.Default) { exporter.importRules(json) }
+        if (result.error != null) return ImportPreview(result, newHistoryCount = 0)
+        return ImportPreview(result, newHistoryCount = newHistoryEvents(result.history).size)
     }
 
     /**
@@ -44,6 +73,7 @@ class ImportRulesUseCase @Inject constructor(
      * - Creates groups that don't exist yet (by name).
      * - Skips duplicate rules (same packageName + mode + schedule).
      * - Assigns new IDs to all imported rules.
+     * - MERGES usage history, skipping events already present (see [HistoryMerge]).
      * - Carries forward the entries the parser had to skip, so the UI can report them.
      */
     suspend fun execute(result: ImportResult): ImportOutcome {
@@ -54,6 +84,7 @@ class ImportRulesUseCase @Inject constructor(
                 groupsCreated = 0,
                 invalidCount = result.invalidCount,
                 invalidReasons = result.invalidReasons,
+                historyInvalidCount = result.invalidHistoryCount,
                 error = result.error
             )
         }
@@ -121,13 +152,41 @@ class ImportRulesUseCase @Inject constructor(
             imported++
         }
 
+        // Step 4: Merge usage history. Deliberately last -- rules are what protect the user, and a
+        // history restore must never be able to stand between them and their rules.
+        val fresh = newHistoryEvents(result.history)
+        if (fresh.isNotEmpty()) {
+            usageRepository.insertEvents(
+                withContext(Dispatchers.Default) { fresh.map(HistoryMerge::toEntity) }
+            )
+        }
+
         return ImportOutcome(
             importedCount = imported,
             duplicateCount = duplicates,
             groupsCreated = groupsCreated,
             invalidCount = result.invalidCount,
-            invalidReasons = result.invalidReasons
+            invalidReasons = result.invalidReasons,
+            historyImportedCount = fresh.size,
+            historyDuplicateCount = result.history.size - fresh.size,
+            historyInvalidCount = result.invalidHistoryCount
         )
+    }
+
+    /**
+     * The events in [history] that are not already stored.
+     *
+     * Only the file's own timestamp window is read back, so restoring one week of a backup does not
+     * pull an entire history into memory. Used by BOTH [preview] and [execute] -- the count the
+     * user is shown and the rows actually written come from the same policy, and execute re-reads
+     * rather than trusting the preview's number.
+     */
+    private suspend fun newHistoryEvents(
+        history: List<ExportedHistoryEvent>
+    ): List<ExportedHistoryEvent> {
+        val range = HistoryMerge.timestampRange(history) ?: return emptyList()
+        val existing = usageRepository.getEventKeysInRange(range.first, range.last).toHashSet()
+        return withContext(Dispatchers.Default) { HistoryMerge.selectNew(history, existing) }
     }
 
     /**

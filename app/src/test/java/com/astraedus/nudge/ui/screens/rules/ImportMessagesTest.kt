@@ -1,9 +1,11 @@
 package com.astraedus.nudge.ui.screens.rules
 
 import com.astraedus.nudge.data.export.ExportedGroup
+import com.astraedus.nudge.data.export.ExportedHistoryEvent
 import com.astraedus.nudge.data.export.ExportedRule
 import com.astraedus.nudge.data.export.ImportResult
 import com.astraedus.nudge.domain.usecase.ImportOutcome
+import com.astraedus.nudge.domain.usecase.ImportPreview
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -12,6 +14,9 @@ import org.junit.Test
  * The user-facing half of [issue #20](https://github.com/astraedus/nudge/issues/20). Skipping a bad
  * rule instead of discarding the backup is only safe if the user is TOLD -- a silent skip is quiet
  * data loss with extra steps. These pin the wording so a refactor cannot drop the disclosure.
+ *
+ * Extended for usage history: history has its own lines, its own counts, and -- for a rules-only
+ * backup -- no lines at all.
  */
 class ImportMessagesTest {
 
@@ -33,17 +38,33 @@ class ImportMessagesTest {
         autoKickCooldownSeconds = 60
     )
 
+    private fun historyEvent(ts: Long) = ExportedHistoryEvent(
+        packageName = "com.app1",
+        timestamp = ts,
+        wasBlocked = true,
+        blockMode = "DELAY",
+        userChangedMind = false
+    )
+
+    private fun preview(result: ImportResult, newHistoryCount: Int = 0) =
+        ImportPreview(result, newHistoryCount)
+
     // --- Preview ---------------------------------------------------------------------------
 
     @Test
     fun `preview warns about entries that will be left out before anything is written`() {
         val message = buildImportPreviewMessage(
-            ImportResult(
-                rules = listOf(rule("com.app1")),
-                groups = emptyList(),
-                version = 1,
-                invalidCount = 2,
-                invalidReasons = listOf("Rule 2: Unknown block mode: TELEPORT", "Rule 5: No value for mode")
+            preview(
+                ImportResult(
+                    rules = listOf(rule("com.app1")),
+                    groups = emptyList(),
+                    version = 1,
+                    invalidCount = 2,
+                    invalidReasons = listOf(
+                        "Rule 2: Unknown block mode: TELEPORT",
+                        "Rule 5: No value for mode"
+                    )
+                )
             )
         )
 
@@ -55,7 +76,7 @@ class ImportMessagesTest {
     @Test
     fun `preview says nothing about invalid entries when there are none`() {
         val message = buildImportPreviewMessage(
-            ImportResult(rules = listOf(rule("com.app1")), groups = emptyList(), version = 1)
+            preview(ImportResult(rules = listOf(rule("com.app1")), groups = emptyList(), version = 1))
         )
 
         assertFalse(message.contains("could not be read"))
@@ -69,15 +90,75 @@ class ImportMessagesTest {
     @Test
     fun `preview keeps the full sentence when the file contains groups`() {
         val message = buildImportPreviewMessage(
-            ImportResult(
-                rules = listOf(rule("com.app1")),
-                groups = listOf(ExportedGroup("Social", listOf("com.instagram.android"))),
-                version = 1
+            preview(
+                ImportResult(
+                    rules = listOf(rule("com.app1")),
+                    groups = listOf(ExportedGroup("Social", listOf("com.instagram.android"))),
+                    version = 1
+                )
             )
         )
 
         assertTrue(message.contains("Import 1 rule(s) and 1 group(s)?"))
         assertTrue(message.contains("Duplicate rules will be skipped."))
+    }
+
+    // --- Preview: history ------------------------------------------------------------------
+
+    @Test
+    fun `preview reports both how much history the file holds and how much of it is new`() {
+        val message = buildImportPreviewMessage(
+            preview(
+                ImportResult(
+                    rules = listOf(rule("com.app1")),
+                    groups = emptyList(),
+                    version = 1,
+                    history = (1..40L).map(::historyEvent)
+                ),
+                newHistoryCount = 12
+            )
+        )
+
+        assertTrue(message.contains("40 history event(s)"))
+        assertTrue(message.contains("(12 new)"))
+    }
+
+    /**
+     * A backup from before history existed must read EXACTLY as it used to -- no line about a
+     * feature the file knows nothing about, and certainly not "0 history events".
+     */
+    @Test
+    fun `preview of a rules-only file never mentions history`() {
+        val message = buildImportPreviewMessage(
+            preview(ImportResult(rules = listOf(rule("com.app1")), groups = emptyList(), version = 1))
+        )
+
+        assertFalse(message.lowercase().contains("history"))
+    }
+
+    @Test
+    fun `preview reports unreadable history separately from unreadable rules`() {
+        val message = buildImportPreviewMessage(
+            preview(
+                ImportResult(
+                    rules = listOf(rule("com.app1")),
+                    groups = emptyList(),
+                    version = 1,
+                    invalidCount = 1,
+                    invalidReasons = listOf("Rule 2: Unknown block mode: TELEPORT"),
+                    history = listOf(historyEvent(1)),
+                    invalidHistoryCount = 4,
+                    invalidHistoryReasons = listOf(
+                        "History event 3: \"timestamp\" is missing or is not a number"
+                    )
+                ),
+                newHistoryCount = 1
+            )
+        )
+
+        assertTrue(message.contains("1 entry could not be read"))
+        assertTrue(message.contains("4 history events could not be read"))
+        assertTrue(message.contains("timestamp"))
     }
 
     // --- Outcome ---------------------------------------------------------------------------
@@ -110,6 +191,7 @@ class ImportMessagesTest {
         assertFalse(message.contains("duplicates"))
         assertFalse(message.contains("could not be read"))
         assertFalse(message.contains("Groups created"))
+        assertFalse("a rules-only import must not mention history", message.contains("History"))
     }
 
     @Test
@@ -127,5 +209,46 @@ class ImportMessagesTest {
         assertTrue(message.contains("Skipped (could not be read): 9"))
         assertTrue(message.contains("...and 6 more"))
         assertFalse("only the first few reasons are listed", message.contains("Rule 9: bad"))
+    }
+
+    // --- Outcome: history ------------------------------------------------------------------
+
+    @Test
+    fun `outcome reports restored, duplicate and unreadable history as three distinct numbers`() {
+        val message = buildImportOutcomeMessage(
+            ImportOutcome(
+                importedCount = 2,
+                duplicateCount = 0,
+                groupsCreated = 0,
+                historyImportedCount = 118,
+                historyDuplicateCount = 40,
+                historyInvalidCount = 3
+            )
+        )
+
+        assertTrue(message.contains("History events restored: 118"))
+        assertTrue(message.contains("History already present: 40"))
+        assertTrue(message.contains("History could not be read: 3"))
+    }
+
+    /**
+     * Re-importing the same backup is a legitimate thing to do, and the dialog must say so plainly
+     * rather than reading like a failure: 0 restored, all of it already present.
+     */
+    @Test
+    fun `an idempotent re-import still reports the history it recognised`() {
+        val message = buildImportOutcomeMessage(
+            ImportOutcome(
+                importedCount = 0,
+                duplicateCount = 3,
+                groupsCreated = 0,
+                historyImportedCount = 0,
+                historyDuplicateCount = 158
+            )
+        )
+
+        assertTrue(message.contains("History events restored: 0"))
+        assertTrue(message.contains("History already present: 158"))
+        assertFalse(message.contains("could not be read"))
     }
 }

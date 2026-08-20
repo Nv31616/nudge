@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +53,8 @@ import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.astraedus.nudge.ui.components.StrictModeChallengeHost
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -76,16 +79,21 @@ fun ActiveRulesScreen(
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
-        uri?.let { readJsonFromUri(context, it) }?.let { json ->
-            viewModel.previewImport(json)
-        }
+        // The read itself is handed to the ViewModel rather than done here: an export now carries
+        // the whole block history, so reading and parsing it is unbounded work that must not run
+        // on the UI thread inside a file-picker callback.
+        uri?.let { picked -> viewModel.previewImport { readJsonFromUri(context, picked) } }
     }
 
-    // Handle export: write to cache dir and share
+    // Handle export: write to cache dir (off the main thread -- the file can be megabytes of
+    // history) and share.
     val exportJson = state.exportJson
-    if (exportJson != null) {
-        shareExportJson(context, exportJson)
-        viewModel.clearExport()
+    LaunchedEffect(exportJson) {
+        if (exportJson != null) {
+            val uri = withContext(Dispatchers.IO) { writeExportFile(context, exportJson) }
+            shareExportUri(context, uri)
+            viewModel.clearExport()
+        }
     }
 
     // Import confirmation dialog
@@ -283,16 +291,18 @@ private fun readJsonFromUri(context: Context, uri: Uri): String? {
     }
 }
 
-private fun shareExportJson(context: Context, json: String) {
+private fun writeExportFile(context: Context, json: String): Uri {
     val file = File(context.cacheDir, "nudge-rules-export.json")
     file.writeText(json)
 
-    val uri = FileProvider.getUriForFile(
+    return FileProvider.getUriForFile(
         context,
         "${context.packageName}.fileprovider",
         file
     )
+}
 
+private fun shareExportUri(context: Context, uri: Uri) {
     val shareIntent = Intent(Intent.ACTION_SEND).apply {
         type = "application/json"
         putExtra(Intent.EXTRA_STREAM, uri)
