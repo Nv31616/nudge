@@ -161,7 +161,9 @@ AccessibilityService: TYPE_WINDOW_STATE_CHANGED
 
 ## Database
 
-Room DB version 8. Migrations: 1->2 (schedule/inapp/grayscale), 2->3 (userChangedMind), 3->4 (showCounter), 4->5 (autoKickAfter), 5->6 (showTimeRemaining, autoKickCooldownSeconds), 6->7 (webDomains), 7->8 (autoKickAfterMinutes).
+Room DB version 9. Migrations: 1->2 (schedule/inapp/grayscale), 2->3 (userChangedMind), 3->4 (showCounter), 4->5 (autoKickAfter), 5->6 (showTimeRemaining, autoKickCooldownSeconds), 6->7 (webDomains), 7->8 (autoKickAfterMinutes), **8->9 (DROPS the dead `usage_events.durationMs` column — issue #22)**.
+
+8->9 is the only migration that is not an `ALTER TABLE … ADD COLUMN`: SQLite before 3.35 has no `DROP COLUMN` and minSdk 26 ships far older engines, so it is a create/copy/drop/rename recreate of `usage_events`. Two constraints on anyone touching it — the recreated table must match Room's generated schema for `UsageEvent` byte for byte (`` `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL ``, …) or Room's validation throws on the next open; and the ROWS are user data (the block/allow history behind the stats screen), so they are copied across, never dropped. The column itself had no write path at all — every reader that summed it read 0 forever, which is how the #14 daily-limit bug shipped — so `NudgeDatabaseMigrationTest` also asserts reflectively that `UsageEvent` declares no duration-shaped field, and it cannot come back.
 
 `NudgeDatabaseMigrationTest` is a **JVM** test (a `SupportSQLiteDatabase` `Proxy` records the `execSQL` calls), not an instrumented one — so migrations are gated by `./gradlew test` with no device. It also asserts every version gap from 1 to the current version has a registered migration, which is what catches "bumped the version, forgot `DatabaseModule.addMigrations`".
 
@@ -317,7 +319,7 @@ Opt-in escape hatch on the block overlays. **ONE 2-minute free window per rollin
 
 ## Stats visualization architecture
 
-- `ui/screens/stats/StatsCalculator.kt` — pure Kotlin (no Android deps), injected via Hilt. Methods: `buildWeeklyData`, `buildTrendData`, `buildHourlyData`, `calculateStreak`. Fully unit-testable.
+- `ui/screens/stats/StatsCalculator.kt` — pure Kotlin (no Android deps), injected via Hilt. Methods: `buildWeeklyDataFromTotals`, `buildTrendData`, `buildAppTrendData`, `calculateStreak`. Fully unit-testable. The event-summing `buildWeeklyData`/`buildHourlyData` pair was deleted together with `durationMs` (#22) — screen-time series come from `ScreenTimeProvider` (UsageStatsManager) and reach the charts as pre-computed totals; `usage_events` only feeds the blocked/walked-away counts and the streak.
 - `ui/screens/stats/charts/WeeklyBarChart.kt` — Canvas-based 7-day bar chart with rounded corners, day labels
 - `ui/screens/stats/charts/BlockedTrendChart.kt` — dual chart: bars (blocked) + line with dots (walked away)
 - `ui/screens/stats/charts/HourlyHeatmap.kt` — 24-cell row, color intensity from surfaceVariant to primary

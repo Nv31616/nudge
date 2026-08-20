@@ -194,8 +194,9 @@ class EvaluateBlockUseCase @Inject constructor(
      * Today's foreground time for [packageName], the number the daily budget is spent against.
      *
      * This MUST come from `UsageStatsManager` (issue #14). The obvious-looking alternative — the
-     * Room `usage_events` table — cannot work: that table logs block/allow *decisions*, and its
-     * `durationMs` column is never written, so summing it returns 0 for every package forever.
+     * Room `usage_events` table — cannot work: that table logs block/allow *decisions* and holds no
+     * foreground duration at all. It once carried a `durationMs` column that was never written, so
+     * summing it returned 0 for every package forever (column deleted in issue #22).
      * Feeding that 0 to [BlockEngine] made `dailyUsageMs >= limit` permanently false, so the
      * daily-limit HARD_BLOCK never fired and the "X left today" line on the overlay was pinned at
      * the full limit. `TimeRemainingHandler` already reads the correct source, which is why the

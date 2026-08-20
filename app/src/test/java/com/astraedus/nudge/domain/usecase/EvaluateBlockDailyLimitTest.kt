@@ -24,9 +24,9 @@ import org.junit.Test
  *
  * The daily budget must be spent against real foreground time from `UsageStatsManager`
  * ([UsageRepository.getDailyForegroundTimeMs]). It used to be read from the Room `usage_events`
- * table, whose `durationMs` column is never written — so the number was always 0, the
- * time-budget HARD_BLOCK could never fire, and the overlay's "X left today" was pinned at the
- * full limit no matter how long the app had been used.
+ * table, whose `durationMs` column was never written (and was deleted in issue #22) — so the
+ * number was always 0, the time-budget HARD_BLOCK could never fire, and the overlay's
+ * "X left today" was pinned at the full limit no matter how long the app had been used.
  *
  * These tests fail against that old wiring: with a 30-minute limit and 40 minutes on the clock,
  * the old code saw 0ms of usage and returned [BlockDecision.Allow].

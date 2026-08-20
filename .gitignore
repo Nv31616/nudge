@@ -19,3 +19,5 @@ keystore.properties
 extension/node_modules/
 extension/.output/
 extension/.wxt/
+
+.claude/worktrees/
