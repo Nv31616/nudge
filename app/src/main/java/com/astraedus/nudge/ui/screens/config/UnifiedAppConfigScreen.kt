@@ -284,7 +284,16 @@ fun UnifiedAppConfigScreen(
                         )
                     }
                     Text(
-                        "Requires ADB permission setup",
+                        // Honest about the limitation rather than promising a setting that
+                        // silently does nothing: grayscale rides inside a BlockDecision.Block, so
+                        // with the app itself unblocked only a feature override can trigger it.
+                        // See BlockMode.NONE.
+                        if (state.blocksWholeApp) {
+                            "Requires ADB permission setup"
+                        } else {
+                            "Requires ADB permission setup. With the whole app unblocked, this " +
+                                "only applies while a blocked feature below is on screen."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
