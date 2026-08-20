@@ -2,6 +2,11 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.14.0] - 2026-08-20
+
+### Added
+- **Backups now carry your history, not just your rules.** Exporting takes your whole record — every block and every walk-away — along with your rules, so moving to a new phone (or restoring after a reset) keeps your streaks, your stats, and both insight pages intact instead of starting you back at zero. Importing merges: restoring on a phone that already has history adds only what's missing, restoring the same file twice changes nothing, and nothing is ever overwritten or doubled. Old backup files still import exactly as before, and new files still open in older versions of Nudge (they just ignore the history). One honest limit: Screen Time comes from Android itself, so that number stays with each device.
+
 ## [1.13.0] - 2026-08-20
 
 ### Added

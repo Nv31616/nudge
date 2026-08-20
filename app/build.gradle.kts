@@ -24,8 +24,8 @@ android {
         applicationId = "dev.astraedus.nudge"
         minSdk = 26
         targetSdk = 35
-        versionCode = 41
-        versionName = "1.13.0"
+        versionCode = 42
+        versionName = "1.14.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
