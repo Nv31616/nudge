@@ -13,9 +13,6 @@ import com.astraedus.nudge.data.db.entity.UsageEventKey
  */
 object HistoryMerge {
 
-    /** Rows are inserted in batches of this size so one import never builds a single huge statement. */
-    const val INSERT_BATCH_SIZE = 500
-
     fun keyOf(event: ExportedHistoryEvent): UsageEventKey = UsageEventKey(
         packageName = event.packageName,
         timestamp = event.timestamp,

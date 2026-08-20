@@ -30,9 +30,16 @@ class UsageRepository @Inject constructor(
     suspend fun getEventKeysInRange(from: Long, to: Long): List<UsageEventKey> =
         usageEventDao.getKeysInRange(from, to)
 
-    /** Restores imported events. Chunked so one import is never a single unbounded statement. */
+    /**
+     * Restores imported events in ONE DAO call, because one `@Insert` call is one Room
+     * transaction and that atomicity is load-bearing: re-import dedup is by key MEMBERSHIP,
+     * so a crash that persisted only part of an import would make every later re-import of
+     * the file skip a whole key group — the unstored copy of an intra-file duplicate would
+     * be unrecoverable. (The old 500-row chunking added no safety anyway: `@Insert` runs
+     * one prepared statement per row, never a single unbounded statement.)
+     */
     suspend fun insertEvents(events: List<UsageEvent>) {
-        events.chunked(HistoryMerge.INSERT_BATCH_SIZE).forEach { usageEventDao.insertAll(it) }
+        if (events.isNotEmpty()) usageEventDao.insertAll(events)
     }
 
     /**
