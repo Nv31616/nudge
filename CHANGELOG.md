@@ -2,7 +2,7 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [1.12.0] - 2026-08-20
+## [1.13.0] - 2026-08-20
 
 ### Added
 - **Tap "Blocked" or "Walked Away" on the dashboard to see the story behind the numbers.** Two new pages, built from the block history Nudge already keeps on your phone:
@@ -10,6 +10,8 @@ All notable changes to Nudge are documented here. Format follows [Keep a Changel
   - **Blocked → know your temptation patterns.** Totals with a two-week sparkline, blocks by hour of day with your "danger hour" highlighted, worst days of the week, your most-blocked apps with how each is blocked, and a week-by-hour heatmap — your temptation fingerprint.
   - Both pages switch between the last 7 and 30 days. Everything is computed on your phone from data that never leaves it, like everything else in Nudge.
 - The new pages also count more honestly than the dashboard tiles did: walking away used to be recorded in a way that inflated the raw blocked count, and the insight pages correct for that.
+
+## [1.12.0] - 2026-08-20
 
 ### Fixed
 - **Apps can no longer slip a video past a block by shrinking it into a floating window** ([#19](https://github.com/astraedus/nudge/issues/19), found by [@polubarev](https://github.com/polubarev)). When Nudge blocked YouTube, YouTube could drop the Short into a picture-in-picture bubble that floats above everything — including a full-screen block. Android gives no app a way to switch that off for another app, so Nudge now spots it happening and, once per app, shows you what is going on with a one-tap link to the setting that stops it (Special app access → Picture-in-picture). It won't ask twice.
