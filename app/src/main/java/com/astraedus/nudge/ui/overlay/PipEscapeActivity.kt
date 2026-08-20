@@ -90,6 +90,22 @@ class PipEscapeActivity : ComponentActivity() {
                 // still disagree at launch time. Never crash the user out of this screen for it.
             }
         }
+        dismiss()
+    }
+
+    /**
+     * Close, clearing [isActive] FIRST.
+     *
+     * The service suspends all enforcement while that flag is set (this screen stands in for the
+     * block overlay). Clearing it only in [onDestroy] would leave enforcement paused for the gap
+     * between `finish()` and the system actually destroying us — a small but real window in which a
+     * blocked app would not be blocked. Same reasoning as [BlockOverlayActivity.onStop], which
+     * clears the overlay flag before finishing rather than waiting for teardown. [onDestroy] keeps
+     * clearing it as a backstop for paths that never route through here (e.g. a process-level kill
+     * of the task).
+     */
+    private fun dismiss() {
+        isActive = false
         finish()
     }
 
@@ -100,7 +116,7 @@ class PipEscapeActivity : ComponentActivity() {
      * bouncing them out of an app they were never trying to escape.
      */
     private fun onDismiss() {
-        finish()
+        dismiss()
     }
 
     @Deprecated("Use OnBackPressedDispatcher")
@@ -116,7 +132,7 @@ class PipEscapeActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         if (!isFinishing && !isChangingConfigurations) {
-            finish()
+            dismiss()
         }
     }
 
