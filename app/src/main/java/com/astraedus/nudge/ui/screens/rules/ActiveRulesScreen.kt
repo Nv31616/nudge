@@ -93,13 +93,7 @@ fun ActiveRulesScreen(
         AlertDialog(
             onDismissRequest = { viewModel.cancelImport() },
             title = { Text("Import Rules") },
-            text = {
-                Text(
-                    "Import ${preview.rules.size} rule(s)" +
-                        if (preview.groups.isNotEmpty()) " and ${preview.groups.size} group(s)" else "" +
-                        "?\n\nDuplicate rules will be skipped."
-                )
-            },
+            text = { Text(buildImportPreviewMessage(preview)) },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmImport() }) {
                     Text("Import")
@@ -118,14 +112,7 @@ fun ActiveRulesScreen(
         AlertDialog(
             onDismissRequest = { viewModel.clearImportOutcome() },
             title = { Text("Import Complete") },
-            text = {
-                val message = buildString {
-                    append("Imported: ${outcome.importedCount} rule(s)")
-                    if (outcome.skippedCount > 0) append("\nSkipped (duplicates): ${outcome.skippedCount}")
-                    if (outcome.groupsCreated > 0) append("\nGroups created: ${outcome.groupsCreated}")
-                }
-                Text(message)
-            },
+            text = { Text(buildImportOutcomeMessage(outcome)) },
             confirmButton = {
                 TextButton(onClick = { viewModel.clearImportOutcome() }) {
                     Text("OK")

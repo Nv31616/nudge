@@ -14,7 +14,14 @@ data class ImportResult(
     val rules: List<ExportedRule>,
     val groups: List<ExportedGroup>,
     val version: Int,
-    val error: String? = null
+    val error: String? = null,
+    /**
+     * Entries (rules or groups) in the file that could not be parsed and were skipped. Every other
+     * entry still imports -- see [RuleExporter.importRules].
+     */
+    val invalidCount: Int = 0,
+    /** One human-readable reason per skipped entry, in file order ("Rule 3: ..."). */
+    val invalidReasons: List<String> = emptyList()
 )
 
 @Singleton
@@ -22,6 +29,9 @@ class RuleExporter @Inject constructor() {
 
     companion object {
         private const val CURRENT_VERSION = 1
+
+        /** Cap on how many per-entry reasons an error message quotes, so it stays readable. */
+        private const val MAX_REPORTED_REASONS = 3
 
         /**
          * Accepted values for a rule's `mode` on import, derived from [BlockMode] rather than
@@ -80,7 +90,15 @@ class RuleExporter @Inject constructor() {
 
     /**
      * Parses and validates a JSON string into an ImportResult.
-     * Returns an ImportResult with error field set if validation fails.
+     *
+     * Entry-level failures are ISOLATED: a rule or group that cannot be parsed is skipped and
+     * counted in [ImportResult.invalidCount], and every other entry still imports. Export/import is
+     * the app's only backup path, so one bad entry must never cost the user the whole file (the
+     * original eager `map` threw out of the loop and the catch returned an empty list -- issue #20).
+     *
+     * ENVELOPE-level failures still fail loudly via [ImportResult.error]: not JSON, a bad version,
+     * a `rules`/`groups` key that is not an array, or a file in which literally nothing was
+     * importable. "Imported 0 rules" is never reported as a success.
      */
     fun importRules(json: String): ImportResult {
         return try {
@@ -104,18 +122,30 @@ class RuleExporter @Inject constructor() {
                 )
             }
 
-            val rulesArray = root.optJSONArray("rules") ?: JSONArray()
-            val groupsArray = root.optJSONArray("groups") ?: JSONArray()
+            val skipped = mutableListOf<String>()
+            val rules = parseEach(root.arrayOrEmpty("rules"), "Rule", skipped, ::parseRule)
+            val groups = parseEach(root.arrayOrEmpty("groups"), "Group", skipped, ::parseGroup)
 
-            val rules = (0 until rulesArray.length()).map { i ->
-                parseRule(rulesArray.getJSONObject(i))
+            // Nothing survived. Skipping every entry is not a successful import of zero rules --
+            // report it as a failure so the user sees why instead of a silent "Imported: 0".
+            if (rules.isEmpty() && groups.isEmpty() && skipped.isNotEmpty()) {
+                return ImportResult(
+                    rules = emptyList(),
+                    groups = emptyList(),
+                    version = version,
+                    error = allInvalidMessage(skipped),
+                    invalidCount = skipped.size,
+                    invalidReasons = skipped
+                )
             }
 
-            val groups = (0 until groupsArray.length()).map { i ->
-                parseGroup(groupsArray.getJSONObject(i))
-            }
-
-            ImportResult(rules = rules, groups = groups, version = version)
+            ImportResult(
+                rules = rules,
+                groups = groups,
+                version = version,
+                invalidCount = skipped.size,
+                invalidReasons = skipped
+            )
         } catch (e: JSONException) {
             ImportResult(
                 rules = emptyList(),
@@ -176,6 +206,50 @@ class RuleExporter @Inject constructor() {
         return root.toString(2)
     }
 
+    /**
+     * Parses every element of [array] independently, collecting a reason into [skipped] for each
+     * one that fails instead of aborting the whole array. Shared by rules and groups so the two can
+     * never drift in how tolerant they are.
+     */
+    private fun <T> parseEach(
+        array: JSONArray,
+        label: String,
+        skipped: MutableList<String>,
+        parse: (JSONObject) -> T
+    ): List<T> {
+        val parsed = ArrayList<T>(array.length())
+        for (i in 0 until array.length()) {
+            try {
+                parsed.add(parse(array.getJSONObject(i)))
+            } catch (e: JSONException) {
+                skipped.add("$label ${i + 1}: ${e.skipReason()}")
+            } catch (e: IllegalArgumentException) {
+                skipped.add("$label ${i + 1}: ${e.skipReason()}")
+            }
+        }
+        return parsed
+    }
+
+    private fun Exception.skipReason(): String =
+        message?.takeIf { it.isNotBlank() } ?: "could not be read"
+
+    private fun allInvalidMessage(skipped: List<String>): String {
+        val shown = skipped.take(MAX_REPORTED_REASONS).joinToString("\n")
+        val extra = skipped.size - MAX_REPORTED_REASONS
+        val more = if (extra > 0) "\n...and $extra more" else ""
+        return "No valid rules or groups found. All ${skipped.size} entries were invalid:\n$shown$more"
+    }
+
+    /**
+     * A key that is absent or null means "none" (older exports omit `groups` entirely); a key that
+     * is present but is NOT an array means the file is not a Nudge export, which must fail loudly
+     * rather than quietly importing zero rules.
+     */
+    private fun JSONObject.arrayOrEmpty(key: String): JSONArray {
+        if (!has(key) || isNull(key)) return JSONArray()
+        return optJSONArray(key) ?: throw JSONException("\"$key\" must be an array")
+    }
+
     private fun parseRule(obj: JSONObject): ExportedRule {
         val mode = obj.getString("mode")
         require(mode in VALID_MODES) {
@@ -205,6 +279,7 @@ class RuleExporter @Inject constructor() {
 
     private fun parseGroup(obj: JSONObject): ExportedGroup {
         val name = obj.getString("name")
+        require(name.isNotBlank()) { "Group name is blank" }
         val membersArr = obj.optJSONArray("members") ?: JSONArray()
         val members = (0 until membersArr.length()).map { membersArr.getString(it) }
         return ExportedGroup(name = name, members = members)
