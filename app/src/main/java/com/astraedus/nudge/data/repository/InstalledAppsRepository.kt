@@ -47,6 +47,13 @@ class InstalledAppsRepository @Inject constructor(
     // list, e.g. apps with usage history but no launcher activity).
     private val nameCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
+    // Per-package icon cache for resolveIcon. Misses are tracked separately because a
+    // ConcurrentHashMap cannot hold a null value, and an uninstalled package that still
+    // has usage history would otherwise re-hit PackageManager on every screen rebuild.
+    private val iconCache = java.util.concurrent.ConcurrentHashMap<String, Drawable>()
+    private val iconMisses: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
     /**
      * Query PackageManager for user-visible apps (those with a LAUNCHER intent).
      * Filters out our own package and critical system packages.
@@ -122,12 +129,35 @@ class InstalledAppsRepository @Inject constructor(
     }
 
     /**
-     * Invalidate both caches so the next [getInstalledApps] / [resolveAppName] re-queries
-     * PackageManager. Call after an app is installed/uninstalled.
+     * Resolve a single package's launcher icon, or null when the app is not installed
+     * (uninstalled apps still appear in usage history, so callers must render without one).
+     *
+     * Same contract as [resolveAppName]: PackageManager work off the main thread, cached
+     * per package.
+     */
+    suspend fun resolveIcon(packageName: String): Drawable? {
+        iconCache[packageName]?.let { return it }
+        if (packageName in iconMisses) return null
+        val resolved = withContext(Dispatchers.IO) {
+            try {
+                context.packageManager.getApplicationIcon(packageName)
+            } catch (_: PackageManager.NameNotFoundException) {
+                null
+            }
+        }
+        if (resolved != null) iconCache[packageName] = resolved else iconMisses.add(packageName)
+        return resolved
+    }
+
+    /**
+     * Invalidate every cache so the next [getInstalledApps] / [resolveAppName] /
+     * [resolveIcon] re-queries PackageManager. Call after an app is installed/uninstalled.
      */
     fun refresh() {
         cachedApps = null
         nameCache.clear()
+        iconCache.clear()
+        iconMisses.clear()
     }
 
     companion object {

@@ -26,6 +26,12 @@ class ScreenTimeProvider @Inject constructor(
     private val timeTracker: TimeTracker
 ) {
 
+    /** Foreground time for one app over a range, plus how many sessions it was spread over. */
+    data class SessionStats(val totalMs: Long, val sessionCount: Int) {
+        /** Mean session length, or null when there is nothing to average. */
+        val averageMs: Long? get() = if (sessionCount > 0) totalMs / sessionCount else null
+    }
+
     private val usageStatsManager: UsageStatsManager? by lazy {
         context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
     }
@@ -51,7 +57,21 @@ class ScreenTimeProvider @Inject constructor(
      * @param dayStartMs start of the range (inclusive), epoch millis
      * @param dayEndMs end of the range (exclusive), epoch millis
      */
-    fun getPerAppScreenTime(dayStartMs: Long, dayEndMs: Long): Map<String, Long> {
+    fun getPerAppScreenTime(dayStartMs: Long, dayEndMs: Long): Map<String, Long> =
+        getPerAppSessionStats(dayStartMs, dayEndMs)
+            .mapValues { it.value.totalMs }
+            .filter { it.value > 0L }
+
+    /**
+     * Per-app foreground time AND the number of foreground sessions that produced it, for
+     * an arbitrary range. This is the primitive [getPerAppScreenTime] is built on — one
+     * `queryEvents` pass, one place that pairs RESUMED with PAUSED.
+     *
+     * The session count is what makes an *average session length* computable
+     * (`totalMs / sessionCount`), which the Willpower screen uses to estimate how much
+     * time a walk-away actually saved.
+     */
+    fun getPerAppSessionStats(dayStartMs: Long, dayEndMs: Long): Map<String, SessionStats> {
         return try {
             val usm = usageStatsManager ?: return emptyMap()
             val now = System.currentTimeMillis()
@@ -62,7 +82,15 @@ class ScreenTimeProvider @Inject constructor(
             val event = UsageEvents.Event()
 
             val foregroundStarts = mutableMapOf<String, Long>()
-            val perApp = mutableMapOf<String, Long>()
+            val perApp = mutableMapOf<String, SessionStats>()
+
+            fun record(pkg: String, durationMs: Long) {
+                val existing = perApp[pkg] ?: SessionStats(0L, 0)
+                perApp[pkg] = SessionStats(
+                    totalMs = existing.totalMs + durationMs,
+                    sessionCount = existing.sessionCount + 1
+                )
+            }
 
             while (events.hasNextEvent()) {
                 events.getNextEvent(event)
@@ -73,8 +101,7 @@ class ScreenTimeProvider @Inject constructor(
                     UsageEvents.Event.ACTIVITY_PAUSED -> {
                         val startTime = foregroundStarts.remove(event.packageName)
                         if (startTime != null) {
-                            perApp[event.packageName] =
-                                (perApp[event.packageName] ?: 0L) + (event.timeStamp - startTime)
+                            record(event.packageName, event.timeStamp - startTime)
                         }
                     }
                 }
@@ -83,11 +110,11 @@ class ScreenTimeProvider @Inject constructor(
             // Only add still-open sessions if the range includes "now"
             if (dayEndMs >= now) {
                 for ((pkg, startTime) in foregroundStarts) {
-                    perApp[pkg] = (perApp[pkg] ?: 0L) + (now - startTime)
+                    record(pkg, now - startTime)
                 }
             }
 
-            perApp.filter { it.value > 0L }
+            perApp
         } catch (_: SecurityException) {
             emptyMap()
         }
