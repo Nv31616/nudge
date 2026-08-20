@@ -51,7 +51,9 @@ fun HomeScreen(
     onNavigateToApps: () -> Unit,
     onNavigateToStats: () -> Unit,
     onNavigateToSettings: () -> Unit,
-    onNavigateToActiveRules: () -> Unit = {}
+    onNavigateToActiveRules: () -> Unit = {},
+    onNavigateToWillpower: () -> Unit = {},
+    onNavigateToInterventions: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val challenge by viewModel.challenge.collectAsStateWithLifecycle()
@@ -139,13 +141,15 @@ fun HomeScreen(
                     icon = Icons.Outlined.Block,
                     label = "Blocked",
                     value = state.blockedCountToday.toString(),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onClick = onNavigateToInterventions
                 )
                 StatCard(
                     icon = Icons.Outlined.ThumbUp,
                     label = "Walked Away",
                     value = state.changedMindCountToday.toString(),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onClick = onNavigateToWillpower
                 )
             }
 
@@ -164,13 +168,15 @@ fun HomeScreen(
                     icon = Icons.Outlined.Block,
                     label = "Blocked",
                     value = state.allTimeBlockedCount.toString(),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onClick = onNavigateToInterventions
                 )
                 StatCard(
                     icon = Icons.Outlined.ThumbUp,
                     label = "Walked Away",
                     value = state.allTimeChangedMindCount.toString(),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    onClick = onNavigateToWillpower
                 )
             }
 

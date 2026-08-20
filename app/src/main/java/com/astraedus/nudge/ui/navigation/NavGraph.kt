@@ -29,8 +29,12 @@ import com.astraedus.nudge.ui.screens.settings.MessagesEditorScreen
 import com.astraedus.nudge.ui.screens.settings.SettingsScreen
 import com.astraedus.nudge.ui.screens.stats.AppDetailScreen
 import com.astraedus.nudge.ui.screens.stats.AppDetailViewModel
+import com.astraedus.nudge.ui.screens.stats.InterventionsScreen
+import com.astraedus.nudge.ui.screens.stats.InterventionsViewModel
 import com.astraedus.nudge.ui.screens.stats.StatsScreen
 import com.astraedus.nudge.ui.screens.stats.StatsViewModel
+import com.astraedus.nudge.ui.screens.stats.WillpowerScreen
+import com.astraedus.nudge.ui.screens.stats.WillpowerViewModel
 import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String) {
@@ -43,6 +47,8 @@ sealed class Screen(val route: String) {
     }
     data object Groups : Screen("groups")
     data object Stats : Screen("stats")
+    data object Willpower : Screen("willpower")
+    data object Interventions : Screen("interventions")
     data object Settings : Screen("settings")
     data object Onboarding : Screen("onboarding")
     data object GrayscaleGuide : Screen("grayscale_guide")
@@ -92,7 +98,25 @@ fun NudgeNavGraph(
                 onNavigateToApps = { navController.navigate(Screen.Apps.route) },
                 onNavigateToStats = { navController.navigate(Screen.Stats.route) },
                 onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
-                onNavigateToActiveRules = { navController.navigate(Screen.ActiveRules.route) }
+                onNavigateToActiveRules = { navController.navigate(Screen.ActiveRules.route) },
+                onNavigateToWillpower = { navController.navigate(Screen.Willpower.route) },
+                onNavigateToInterventions = { navController.navigate(Screen.Interventions.route) }
+            )
+        }
+
+        composable(Screen.Willpower.route) {
+            val viewModel: WillpowerViewModel = hiltViewModel()
+            WillpowerScreen(
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.Interventions.route) {
+            val viewModel: InterventionsViewModel = hiltViewModel()
+            InterventionsScreen(
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() }
             )
         }
 
