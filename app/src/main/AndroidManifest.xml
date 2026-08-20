@@ -62,6 +62,16 @@
             android:taskAffinity=""
             android:theme="@style/Theme.Nudge.Overlay" />
 
+        <!-- Issue #19: PiP defeats the block overlay (e.g. YouTube Shorts). Explains the
+             limitation and deep-links to the per-app picture-in-picture settings toggle. -->
+        <activity
+            android:name=".ui.overlay.PipEscapeActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Nudge.Overlay" />
+
         <service
             android:name=".service.NudgeAccessibilityService"
             android:exported="false"
