@@ -1,11 +1,14 @@
 package com.astraedus.nudge.ui.overlay
 
-import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import com.astraedus.nudge.ui.theme.NudgeTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -61,11 +64,14 @@ class PipEscapeActivity : ComponentActivity() {
 
         setContent {
             NudgeTheme {
+                // Flips to the manual instructions if the deep link turns out not to open. See
+                // [onOpenSettings] — the launch can fail even though the intent resolved.
+                var launchFailed by rememberSaveable { mutableStateOf(false) }
                 PipEscapeContent(
                     appLabel = appLabel,
                     packageName = packageName,
-                    canOpenSettings = target != null,
-                    onOpenSettings = { onOpenSettings(packageName) },
+                    canOpenSettings = target != null && !launchFailed,
+                    onOpenSettings = { if (!openSettings(packageName)) launchFailed = true },
                     onDismiss = { onDismiss() }
                 )
             }
@@ -80,17 +86,37 @@ class PipEscapeActivity : ComponentActivity() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
-    private fun onOpenSettings(packageName: String) {
-        val target = resolvedTarget
-        if (target != null) {
+    /**
+     * Try every candidate destination in order until one actually launches, closing this screen on
+     * success. Returns false when none of them opened, and then this screen deliberately STAYS UP
+     * and swaps in the manual instructions.
+     *
+     * Why it is written this defensively: resolving an intent and launching it are different
+     * questions, and on a real Pixel 3 the first version of this screen resolved a target at
+     * onCreate, launched nothing on tap, and closed itself anyway — the user pressed the one button
+     * on the screen and got a silent no-op. That is the same silent-failure class that cost this
+     * feature a release. So:
+     *
+     *  - Every candidate is tried at tap time, not just the one resolved at onCreate.
+     *  - `catch (Exception)`, not just [ActivityNotFoundException]: an OEM Settings that rejects the
+     *    intent with a SecurityException would otherwise crash the user out of a screen whose only
+     *    job is to be helpful.
+     *  - Failure is VISIBLE. The deep link is this screen's whole value; if it cannot be delivered,
+     *    the user must still be told where to go by hand.
+     */
+    private fun openSettings(packageName: String): Boolean {
+        // resolvedTarget first (it is the one the button was offered for), then the rest as backups.
+        val ordered = listOfNotNull(resolvedTarget) + PipSettings.targets().filter { it != resolvedTarget }
+        for (target in ordered) {
             try {
                 startActivity(buildIntent(target, packageName))
-            } catch (_: ActivityNotFoundException) {
-                // Resolution was checked at onCreate time, but the OS state (or OEM behavior) can
-                // still disagree at launch time. Never crash the user out of this screen for it.
+                dismiss()
+                return true
+            } catch (_: Exception) {
+                // Try the next candidate.
             }
         }
-        dismiss()
+        return false
     }
 
     /**
