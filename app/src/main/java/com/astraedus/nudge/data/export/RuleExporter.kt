@@ -20,7 +20,10 @@ data class ImportResult(
      * entry still imports -- see [RuleExporter.importRules].
      */
     val invalidCount: Int = 0,
-    /** One human-readable reason per skipped entry, in file order ("Rule 3: ..."). */
+    /**
+     * Human-readable reason per skipped entry, in file order ("Rule 3: ..."). Capped -- these are
+     * for display, so [invalidCount] is the authoritative total, not `invalidReasons.size`.
+     */
     val invalidReasons: List<String> = emptyList()
 )
 
@@ -32,6 +35,13 @@ class RuleExporter @Inject constructor() {
 
         /** Cap on how many per-entry reasons an error message quotes, so it stays readable. */
         private const val MAX_REPORTED_REASONS = 3
+
+        /**
+         * Cap on how many reasons are retained at all. [ImportResult.invalidCount] still counts
+         * every skip; only the explanatory strings are bounded, so a pathological file cannot make
+         * the reason list grow with its own entry count.
+         */
+        private const val MAX_COLLECTED_REASONS = 20
 
         /**
          * Accepted values for a rule's `mode` on import, derived from [BlockMode] rather than
@@ -122,29 +132,35 @@ class RuleExporter @Inject constructor() {
                 )
             }
 
-            val skipped = mutableListOf<String>()
-            val rules = parseEach(root.arrayOrEmpty("rules"), "Rule", skipped, ::parseRule)
-            val groups = parseEach(root.arrayOrEmpty("groups"), "Group", skipped, ::parseGroup)
+            // Count every skip but retain only the first few reasons: the reason list is driven by
+            // file content, and a wrong-file pick (a big JSON of anything else) must not turn into
+            // a million strings on a 3GB device.
+            var invalidCount = 0
+            val reasons = mutableListOf<String>()
+            val onSkip: (String) -> Unit = { reason ->
+                invalidCount++
+                if (reasons.size < MAX_COLLECTED_REASONS) reasons.add(reason)
+            }
+
+            val rules = parseEach(root.arrayOrEmpty("rules"), "Rule", onSkip, ::parseRule)
+            val groups = parseEach(root.arrayOrEmpty("groups"), "Group", onSkip, ::parseGroup)
 
             // Nothing survived. Skipping every entry is not a successful import of zero rules --
             // report it as a failure so the user sees why instead of a silent "Imported: 0".
-            if (rules.isEmpty() && groups.isEmpty() && skipped.isNotEmpty()) {
-                return ImportResult(
-                    rules = emptyList(),
-                    groups = emptyList(),
-                    version = version,
-                    error = allInvalidMessage(skipped),
-                    invalidCount = skipped.size,
-                    invalidReasons = skipped
-                )
+            val error = if (rules.isEmpty() && groups.isEmpty() && invalidCount > 0) {
+                allInvalidMessage(invalidCount, reasons)
+            } else {
+                null
             }
 
+            // Both lists are empty whenever `error` is set, so they need no special-casing here.
             ImportResult(
                 rules = rules,
                 groups = groups,
                 version = version,
-                invalidCount = skipped.size,
-                invalidReasons = skipped
+                error = error,
+                invalidCount = invalidCount,
+                invalidReasons = reasons
             )
         } catch (e: JSONException) {
             ImportResult(
@@ -214,7 +230,7 @@ class RuleExporter @Inject constructor() {
     private fun <T> parseEach(
         array: JSONArray,
         label: String,
-        skipped: MutableList<String>,
+        onSkip: (String) -> Unit,
         parse: (JSONObject) -> T
     ): List<T> {
         val parsed = ArrayList<T>(array.length())
@@ -222,9 +238,9 @@ class RuleExporter @Inject constructor() {
             try {
                 parsed.add(parse(array.getJSONObject(i)))
             } catch (e: JSONException) {
-                skipped.add("$label ${i + 1}: ${e.skipReason()}")
+                onSkip("$label ${i + 1}: ${e.skipReason()}")
             } catch (e: IllegalArgumentException) {
-                skipped.add("$label ${i + 1}: ${e.skipReason()}")
+                onSkip("$label ${i + 1}: ${e.skipReason()}")
             }
         }
         return parsed
@@ -233,11 +249,11 @@ class RuleExporter @Inject constructor() {
     private fun Exception.skipReason(): String =
         message?.takeIf { it.isNotBlank() } ?: "could not be read"
 
-    private fun allInvalidMessage(skipped: List<String>): String {
-        val shown = skipped.take(MAX_REPORTED_REASONS).joinToString("\n")
-        val extra = skipped.size - MAX_REPORTED_REASONS
+    private fun allInvalidMessage(invalidCount: Int, reasons: List<String>): String {
+        val shown = reasons.take(MAX_REPORTED_REASONS).joinToString("\n")
+        val extra = invalidCount - MAX_REPORTED_REASONS
         val more = if (extra > 0) "\n...and $extra more" else ""
-        return "No valid rules or groups found. All ${skipped.size} entries were invalid:\n$shown$more"
+        return "No valid rules or groups found. All $invalidCount entries were invalid:\n$shown$more"
     }
 
     /**

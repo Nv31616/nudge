@@ -51,8 +51,9 @@ class RuleExporterTest {
     }
 
     /**
-     * A backup with one unrecognized mode must not take the recognizable rules down with it -- the
-     * pre-existing eager parse made a single bad entry cost the user every rule AND every group.
+     * An unrecognized mode is still refused -- tolerating one would write a rule the BlockEngine
+     * cannot evaluate. Here it is the file's ONLY rule, so nothing is importable and the import
+     * fails loudly; per-entry isolation (issue #20) is covered by [ImportSkipInvalidTest].
      */
     @Test
     fun `an unknown block mode is still rejected`() {
@@ -66,6 +67,8 @@ class RuleExporterTest {
 
         assertNotNull(result.error)
         assertTrue(result.error!!.contains("TELEPORT"))
+        assertEquals(1, result.invalidCount)
+        assertTrue(result.rules.isEmpty())
     }
 
     @Test
