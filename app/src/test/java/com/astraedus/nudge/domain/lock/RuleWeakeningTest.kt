@@ -19,7 +19,9 @@ class RuleWeakeningTest {
         enabled: Boolean = true,
         autoKickAfter: Int? = null,
         autoKickAfterMinutes: Int? = null,
-        autoKickCooldownSeconds: Int = 60
+        autoKickCooldownSeconds: Int = 60,
+        webDomains: String? = null,
+        webBlockMode: String? = null
     ) = BlockRule(
         packageName = "com.example",
         mode = mode,
@@ -28,7 +30,9 @@ class RuleWeakeningTest {
         enabled = enabled,
         autoKickAfter = autoKickAfter,
         autoKickAfterMinutes = autoKickAfterMinutes,
-        autoKickCooldownSeconds = autoKickCooldownSeconds
+        autoKickCooldownSeconds = autoKickCooldownSeconds,
+        webDomains = webDomains,
+        webBlockMode = webBlockMode
     )
 
     // ── delay ──
@@ -310,5 +314,69 @@ class RuleWeakeningTest {
         val old = rule(autoKickAfter = 60, autoKickCooldownSeconds = 60)
         val new = rule(autoKickAfter = 20, autoKickCooldownSeconds = 10)
         assertTrue(RuleWeakening.isWeakening(old, new))
+    }
+
+    // ── web enforcement (issue #21: websites block independently of the app-level mode) ──
+
+    @Test
+    fun `softening the website block mode is weakening`() {
+        val old = rule(mode = "NONE", webDomains = "instagram.com", webBlockMode = "HARD_BLOCK")
+        val new = rule(mode = "NONE", webDomains = "instagram.com", webBlockMode = "BREATHING")
+        assertTrue(RuleWeakening.isWeakening(old, new))
+    }
+
+    @Test
+    fun `strengthening the website block mode is not weakening`() {
+        val old = rule(mode = "NONE", webDomains = "instagram.com", webBlockMode = "DELAY")
+        val new = rule(mode = "NONE", webDomains = "instagram.com", webBlockMode = "HARD_BLOCK")
+        assertFalse(RuleWeakening.isWeakening(old, new))
+    }
+
+    /**
+     * The Strict Mode hole this axis closes: with the app-level rule left alone at NONE, dropping
+     * the independent web mode down to the (unblocking) app mode used to look like a no-op edit.
+     */
+    @Test
+    fun `dropping an independent website mode back to an unblocking app mode is weakening`() {
+        val old = rule(mode = "NONE", webDomains = "instagram.com", webBlockMode = "HARD_BLOCK")
+        val new = rule(mode = "NONE", webDomains = "instagram.com", webBlockMode = null)
+        assertTrue(RuleWeakening.isWeakening(old, new))
+    }
+
+    @Test
+    fun `removing configured web domains is weakening`() {
+        val old = rule(mode = "DELAY", webDomains = "instagram.com")
+        val new = rule(mode = "DELAY", webDomains = null)
+        assertTrue(RuleWeakening.isWeakening(old, new))
+    }
+
+    @Test
+    fun `adding web domains where there were none is not weakening`() {
+        val old = rule(mode = "DELAY", webDomains = null)
+        val new = rule(mode = "DELAY", webDomains = "instagram.com")
+        assertFalse(RuleWeakening.isWeakening(old, new))
+    }
+
+    @Test
+    fun `inheriting web mode follows the app mode, so leaving both alone is not weakening`() {
+        val old = rule(mode = "HARD_BLOCK", webDomains = "instagram.com", webBlockMode = null)
+        val new = rule(mode = "HARD_BLOCK", webDomains = "instagram.com", webBlockMode = null)
+        assertFalse(RuleWeakening.isWeakening(old, new))
+    }
+
+    /**
+     * Turning whole-app blocking off while pinning the websites to the SAME mode they inherited
+     * does not weaken the web axis — the app-level mode softening is what gets caught, and it is
+     * caught on its own dimension.
+     */
+    @Test
+    fun `pinning the inherited mode when whole-app blocking goes off keeps web enforcement equal`() {
+        val old = rule(mode = "HARD_BLOCK", webDomains = "instagram.com", webBlockMode = null)
+        val new = rule(mode = "NONE", webDomains = "instagram.com", webBlockMode = "HARD_BLOCK")
+        assertTrue("app-level mode softened", RuleWeakening.isWeakening(old, new))
+
+        // …and with the app-level mode held constant, the same web pinning is a no-op.
+        val oldNone = rule(mode = "NONE", webDomains = "instagram.com", webBlockMode = "HARD_BLOCK")
+        assertFalse(RuleWeakening.isWeakening(oldNone, new))
     }
 }

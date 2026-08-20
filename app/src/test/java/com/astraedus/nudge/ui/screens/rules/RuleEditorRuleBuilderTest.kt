@@ -23,7 +23,8 @@ class RuleEditorRuleBuilderTest {
         originalAutoKickCooldownSeconds: Int = 60,
         originalAutoKickAfterMinutes: Int? = null,
         showCounter: Boolean = true,
-        webDomains: String? = null
+        webDomains: String? = null,
+        webBlockMode: String? = null
     ) = RuleEditorUiState(
         packageName = "com.example.app",
         existingRuleId = 7L,
@@ -35,7 +36,8 @@ class RuleEditorRuleBuilderTest {
         autoKickCooldownMinutesText = autoKickCooldownMinutesText,
         originalAutoKickCooldownSeconds = originalAutoKickCooldownSeconds,
         originalAutoKickAfterMinutes = originalAutoKickAfterMinutes,
-        webDomains = webDomains
+        webDomains = webDomains,
+        webBlockMode = webBlockMode
     )
 
     // ── web domains (regression) ──
@@ -54,6 +56,23 @@ class RuleEditorRuleBuilderTest {
     @Test
     fun `a rule with no web domains still saves null`() {
         assertNull(RuleEditorViewModel.buildRule(state()).webDomains)
+    }
+
+    @Test
+    fun `saving preserves the website block mode this screen cannot edit`() {
+        // Same regression class as webDomains: webBlockMode is what those domains block with, so
+        // dropping it downgrades a website-only block (app open, site blocked) back to inheriting
+        // an app-level mode that may be NONE -- i.e. enforcing nothing at all.
+        val rule = RuleEditorViewModel.buildRule(
+            state(webDomains = "instagram.com", webBlockMode = "HARD_BLOCK")
+        )
+
+        assertEquals("HARD_BLOCK", rule.webBlockMode)
+    }
+
+    @Test
+    fun `a rule with no independent website mode still saves null`() {
+        assertNull(RuleEditorViewModel.buildRule(state()).webBlockMode)
     }
 
     // ── the two triggers are independent ──

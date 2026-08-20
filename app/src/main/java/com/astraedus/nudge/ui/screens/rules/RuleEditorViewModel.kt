@@ -70,6 +70,10 @@ data class RuleEditorUiState(
     // Carried through untouched: this editor has no web-domain UI, but the rule it saves replaces
     // the loaded one wholesale, so not round-tripping this silently wiped an app's web blocking.
     val webDomains: String? = null,
+    // Carried through for the same reason as [webDomains]: it is what those domains block with
+    // (null = inherit the app-level mode), so dropping it here would silently downgrade a
+    // website-only block back to "enforces nothing" whenever this editor saved.
+    val webBlockMode: String? = null,
     // All rules for this package (for summary display)
     val allRulesForPackage: List<RuleSummary> = emptyList()
 )
@@ -152,7 +156,8 @@ class RuleEditorViewModel @Inject constructor(
                     originalAutoKickCooldownSeconds = existing.autoKickCooldownSeconds,
                     originalAutoKickAfterMinutes = existing.autoKickAfterMinutes,
                     showTimeRemaining = existing.showTimeRemaining,
-                    webDomains = existing.webDomains
+                    webDomains = existing.webDomains,
+                    webBlockMode = existing.webBlockMode
                 )
             }
         }
@@ -356,9 +361,10 @@ class RuleEditorViewModel @Inject constructor(
          *    passive use with no counter on screen;
          *  - the duration fields go through `DurationInput.resolve*`, so a save that did not touch
          *    them re-persists the exact prior value rather than a display-rounded one;
-         *  - `webDomains` is carried through from the loaded rule. This editor has no web-domain
-         *    UI, and before it was threaded through here every save from this screen silently wiped
-         *    an app's web blocking.
+         *  - `webDomains` and `webBlockMode` are carried through from the loaded rule. This editor
+         *    has no web-domain UI, and before they were threaded through here every save from this
+         *    screen silently wiped an app's web blocking (or, for `webBlockMode`, downgraded a
+         *    website-only block to one that enforces nothing).
          */
         internal fun buildRule(state: RuleEditorUiState): BlockRule {
             val scheduleDaysStr = if (state.scheduleEnabled && state.scheduleDays.isNotEmpty()) {
@@ -409,6 +415,7 @@ class RuleEditorViewModel @Inject constructor(
                     )
                 } else state.originalAutoKickCooldownSeconds,
                 webDomains = state.webDomains,
+                webBlockMode = state.webBlockMode,
                 autoKickAfterMinutes = if (state.autoKickEnabled) {
                     DurationInput.resolveMinutes(
                         state.autoKickAfterMinutesText,
