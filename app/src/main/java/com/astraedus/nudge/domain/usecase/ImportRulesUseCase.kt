@@ -10,10 +10,20 @@ import com.astraedus.nudge.data.repository.BlockRuleRepository
 import kotlinx.coroutines.flow.firstOrNull
 import javax.inject.Inject
 
+/**
+ * What an import actually did. The two "skipped" counts are deliberately separate: a duplicate was
+ * understood and intentionally not re-added, an invalid entry could not be read at all -- only the
+ * second one means the user lost something from their backup, so the UI must not merge them.
+ */
 data class ImportOutcome(
     val importedCount: Int,
-    val skippedCount: Int,
+    /** Rules already present in the DB (same target + mode + schedule), so not re-added. */
+    val duplicateCount: Int,
     val groupsCreated: Int,
+    /** Entries in the file that could not be parsed and were skipped (see [ImportResult]). */
+    val invalidCount: Int = 0,
+    /** One human-readable reason per skipped entry, in file order. */
+    val invalidReasons: List<String> = emptyList(),
     val error: String? = null
 )
 
@@ -34,10 +44,18 @@ class ImportRulesUseCase @Inject constructor(
      * - Creates groups that don't exist yet (by name).
      * - Skips duplicate rules (same packageName + mode + schedule).
      * - Assigns new IDs to all imported rules.
+     * - Carries forward the entries the parser had to skip, so the UI can report them.
      */
     suspend fun execute(result: ImportResult): ImportOutcome {
         if (result.error != null) {
-            return ImportOutcome(0, 0, 0, error = result.error)
+            return ImportOutcome(
+                importedCount = 0,
+                duplicateCount = 0,
+                groupsCreated = 0,
+                invalidCount = result.invalidCount,
+                invalidReasons = result.invalidReasons,
+                error = result.error
+            )
         }
 
         // Step 1: Resolve groups - find existing by name or create new ones
@@ -68,13 +86,13 @@ class ImportRulesUseCase @Inject constructor(
 
         // Step 3: Insert rules, skipping duplicates
         var imported = 0
-        var skipped = 0
+        var duplicates = 0
 
         for (exportedRule in result.rules) {
             val groupId = exportedRule.groupName?.let { groupNameToId[it] }
 
             if (isDuplicate(exportedRule, groupId, existingRules)) {
-                skipped++
+                duplicates++
                 continue
             }
 
@@ -104,8 +122,10 @@ class ImportRulesUseCase @Inject constructor(
 
         return ImportOutcome(
             importedCount = imported,
-            skippedCount = skipped,
-            groupsCreated = groupsCreated
+            duplicateCount = duplicates,
+            groupsCreated = groupsCreated,
+            invalidCount = result.invalidCount,
+            invalidReasons = result.invalidReasons
         )
     }
 
