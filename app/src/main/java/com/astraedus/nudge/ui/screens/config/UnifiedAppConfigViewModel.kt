@@ -121,6 +121,16 @@ class UnifiedAppConfigViewModel @Inject constructor(
                 ?: UnifiedAppConfigState.DEFAULT_WEB_DOMAINS[packageName]
                 ?: ""
 
+            // What the websites block with. A stored webBlockMode wins; otherwise they inherit
+            // the app-level mode, so seed the picker with that (falling back to DELAY when the
+            // app-level mode is NONE and there is no stored choice to show).
+            val appLevelMode = parseBlockMode(defaultAppRule?.mode)
+            val webBlockMode = defaultAppRule?.webBlockMode
+                ?.let { parseBlockMode(it) }
+                ?.takeIf { it != BlockMode.NONE }
+                ?: appLevelMode.takeIf { it != BlockMode.NONE }
+                ?: BlockMode.DELAY
+
             _uiState.value = UnifiedAppConfigState(
                 packageName = packageName,
                 appName = appName,
@@ -134,12 +144,12 @@ class UnifiedAppConfigViewModel @Inject constructor(
                 // Web domain blocking
                 webDomainEnabled = webDomainEnabled,
                 webDomains = webDomainsValue,
+                webBlockMode = webBlockMode,
                 // Default behavior
-                defaultMode = parseBlockMode(defaultAppRule?.mode),
+                defaultMode = appLevelMode,
                 // If the saved rule is NONE there is no prior blocking choice to restore, so
                 // offer DELAY when the user switches whole-app blocking back on.
-                lastBlockingMode = parseBlockMode(defaultAppRule?.mode)
-                    .takeIf { it != BlockMode.NONE } ?: BlockMode.DELAY,
+                lastBlockingMode = appLevelMode.takeIf { it != BlockMode.NONE } ?: BlockMode.DELAY,
                 defaultDelaySeconds = defaultAppRule?.delaySeconds ?: 15,
                 defaultAutoKickEnabled = defaultAppRule?.autoKickAfter != null || defaultAppRule?.autoKickAfterMinutes != null,
                 defaultAutoKickByInteractions = defaultAppRule == null || defaultAppRule.autoKickAfter != null,
@@ -190,9 +200,16 @@ class UnifiedAppConfigViewModel @Inject constructor(
     // ═══ Save logic ═══
 
     /** Builds the app-level default rule that [save] would persist for the current state. */
-    private fun buildDefaultRule(state: UnifiedAppConfigState): BlockRule {
+    internal fun buildDefaultRule(state: UnifiedAppConfigState): BlockRule {
         val webDomains = if (state.webDomainEnabled && state.webDomains.isNotBlank()) {
             state.webDomains.trim()
+        } else null
+
+        // Persist an independent web mode ONLY when the app-level mode cannot express one — i.e.
+        // when whole-app blocking is off. While it is on, websites inherit the app's mode (null),
+        // so the two can never drift apart or need a second edit to stay in sync.
+        val webBlockMode = if (webDomains != null && !state.blocksWholeApp) {
+            state.webBlockMode.name
         } else null
 
         return BlockRule(
@@ -212,7 +229,8 @@ class UnifiedAppConfigViewModel @Inject constructor(
                 state.defaultAutoKickCooldownMinutesText,
                 state.originalAutoKickCooldownSeconds
             ),
-            webDomains = webDomains
+            webDomains = webDomains,
+            webBlockMode = webBlockMode
         )
     }
 
@@ -403,22 +421,37 @@ class UnifiedAppConfigViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(webDomains = domains)
     }
 
+    /**
+     * Mode the configured websites block with. Only reachable (and only persisted) while
+     * whole-app blocking is off — with it on, websites follow the app's own mode.
+     */
+    fun setWebBlockMode(mode: BlockMode) {
+        if (mode == BlockMode.NONE) return
+        _uiState.value = _uiState.value.copy(webBlockMode = mode)
+    }
+
     // ═══ Default behavior ═══
 
     fun setDefaultMode(mode: BlockMode) {
-        _uiState.value = _uiState.value.copy(
+        val current = _uiState.value
+        _uiState.value = current.copy(
             defaultMode = mode,
             // Remember the last real blocking choice so toggling whole-app blocking off and back
             // on restores it instead of snapping to DELAY.
-            lastBlockingMode = if (mode == BlockMode.NONE) _uiState.value.lastBlockingMode else mode
+            lastBlockingMode = if (mode == BlockMode.NONE) current.lastBlockingMode else mode,
+            // Websites inherit the app's mode while the app is blocked, so keep the web picker on
+            // the same value: switching whole-app blocking off afterwards must not silently
+            // change what the websites do.
+            webBlockMode = if (mode == BlockMode.NONE) current.webBlockMode else mode
         )
     }
 
     /**
      * Turn whole-app blocking on/off. Off writes [BlockMode.NONE] on the app-level rule, which
-     * keeps the daily limit, counter and overlays intact while letting the app itself open — the
-     * combination needed to block only Shorts/Reels. Grayscale and web-domain blocking do NOT
-     * survive the switch; see [BlockMode.NONE].
+     * keeps the daily limit, counter, overlays AND web-domain blocking intact while letting the
+     * app itself open — the combination needed to block only Shorts/Reels, or to block a site
+     * without blocking its app (issue #21). Websites then enforce at [UnifiedAppConfigState.webBlockMode],
+     * persisted on the rule. Grayscale does NOT survive the switch; see [BlockMode.NONE].
      */
     fun setBlocksWholeApp(blocks: Boolean) {
         val current = _uiState.value

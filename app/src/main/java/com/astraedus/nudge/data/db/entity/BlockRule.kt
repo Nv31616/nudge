@@ -31,6 +31,16 @@ data class BlockRule(
     val autoKickCooldownSeconds: Int = 60,
     // Web domain blocking (comma-separated: "instagram.com,www.instagram.com")
     val webDomains: String? = null,
+    /**
+     * Block mode used for [webDomains], INDEPENDENT of the app-level [mode].
+     *
+     * NULL = inherit [mode] (the historical behaviour, and what every rule written before this
+     * column existed carries). A non-null value wins, which is what makes "don't block the app,
+     * do block the site" expressible: with [mode] = NONE the app opens freely while the website
+     * still enforces. Resolution lives in
+     * [com.astraedus.nudge.domain.model.WebBlockMode.resolve] — never read this field raw.
+     */
+    val webBlockMode: String? = null,
     // Time-based auto-kick: send user to home screen after this many minutes of foreground time in
     // one session (null = disabled). Independent of [autoKickAfter]; whichever fires first kicks.
     val autoKickAfterMinutes: Int? = null

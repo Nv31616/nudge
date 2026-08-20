@@ -322,31 +322,20 @@ fun UnifiedAppConfigScreen(
                             fontWeight = FontWeight.Medium
                         )
                         InfoButton(
-                            "Also blocks this app's website in Chrome.\n\n" +
-                            "When you visit the website in Chrome, the same overlay (delay, " +
-                            "breathing, or hard block) will appear.\n\n" +
+                            "Also blocks this app's website in the browser.\n\n" +
+                            "Works even with \"Block the whole app\" off — the app opens " +
+                            "normally while the website is still blocked, with the mode you " +
+                            "pick here.\n\n" +
                             "Currently supports Chrome only."
                         )
                     }
                     Switch(
-                        checked = state.webDomainEnabled && state.blocksWholeApp,
-                        enabled = state.blocksWholeApp,
+                        checked = state.webDomainEnabled,
                         onCheckedChange = viewModel::setWebDomainEnabled
                     )
                 }
 
-                // A web-domain rule is evaluated through the SAME app-level mode, so with the app
-                // itself set to NONE the engine allows the site too. Rather than show a switch that
-                // silently enforces nothing, say why it is unavailable.
-                if (!state.blocksWholeApp) {
-                    Text(
-                        "Needs \"Block the whole app\" on — web blocking uses the same block mode.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                if (state.webDomainEnabled && state.blocksWholeApp) {
+                if (state.webDomainEnabled) {
                     OutlinedTextField(
                         value = state.webDomains,
                         onValueChange = viewModel::setWebDomains,
@@ -362,6 +351,44 @@ fun UnifiedAppConfigScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+
+                    // Websites enforce independently of the app-level mode (issue #21). While the
+                    // app itself is blocked they simply follow its mode; when it is not, there is
+                    // no app-level mode to follow, so the website mode is chosen here instead of
+                    // silently enforcing nothing (which is what used to happen).
+                    if (state.blocksWholeApp) {
+                        Text(
+                            "Websites use the same block mode as the app.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            "Website block mode",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Medium
+                        )
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            BLOCKING_MODES.forEachIndexed { index, mode ->
+                                SegmentedButton(
+                                    selected = state.webBlockMode == mode,
+                                    onClick = { viewModel.setWebBlockMode(mode) },
+                                    shape = SegmentedButtonDefaults.itemShape(
+                                        index = index,
+                                        count = BLOCKING_MODES.size
+                                    )
+                                ) {
+                                    Text(blockModeLabel(mode))
+                                }
+                            }
+                        }
+                        Text(
+                            "${state.appName} opens normally; these websites are still blocked. " +
+                                blockModeDescription(state.webBlockMode),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
@@ -430,8 +457,11 @@ fun UnifiedAppConfigScreen(
                 }
             }
 
-            // Delay duration (if applicable)
-            if (state.blocksWholeApp && state.defaultMode != BlockMode.HARD_BLOCK) {
+            // Delay duration (if applicable). One `delaySeconds` is stored per rule and it feeds
+            // whichever delay is live — the app's, or (with whole-app blocking off) the website
+            // one — so the control has to stay reachable in the web-only case too, else a web
+            // DELAY would be permanently stuck at whatever was last saved.
+            if (state.showDelayDuration) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         "Delay Duration",

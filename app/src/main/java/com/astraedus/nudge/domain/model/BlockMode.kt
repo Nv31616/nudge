@@ -6,11 +6,17 @@ enum class BlockMode {
      * interaction counter and the time-remaining overlay WITHOUT also gating the whole app — which
      * is what makes "block only Shorts, leave the rest of YouTube alone" expressible.
      *
-     * NOT carried: grayscale and web-domain blocking. Both are enforced only through a
-     * `BlockDecision.Block`, and a NONE rule yields Allow — so grayscale applies only while some
-     * OTHER rule (e.g. a feature override) is blocking, and a web-domain rule whose mode is NONE
-     * allows the site. The config screen disables the web toggle in that state rather than
-     * offering protection that would never be enforced.
+     * Web-domain blocking IS carried, since issue #21: a rule's websites enforce at their own
+     * [com.astraedus.nudge.data.db.entity.BlockRule.webBlockMode] (resolved by [WebBlockMode]),
+     * so "the app opens normally, the website is blocked" is expressible. Before that fix, web
+     * domains were evaluated through THIS mode and so enforced nothing at all on a NONE rule —
+     * a blocker silently not blocking — and the config screen disabled the web toggle to hide it.
+     *
+     * NOT carried: grayscale. It is enforced only through a `BlockDecision.Block`, and a NONE
+     * rule yields Allow — so a NONE rule's grayscale flag is inert, applying only while some
+     * OTHER rule (e.g. a feature override) is blocking. Fixing that needs a separate enforcement
+     * path in the service: there is no "grayscale while allowing" decision today, and
+     * `BlockDecision.Block` is the only thing `GrayscaleManager` is driven from.
      *
      * Before this existed, [com.astraedus.nudge.ui.screens.config.UnifiedAppConfigScreen] always
      * wrote a blocking app-level rule and feature overrides could only differ from it, so a

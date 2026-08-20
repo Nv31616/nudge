@@ -19,7 +19,7 @@ import com.astraedus.nudge.data.db.entity.UsageEvent
         AppGroupMember::class,
         UsageEvent::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class NudgeDatabase : RoomDatabase() {
@@ -76,6 +76,30 @@ abstract class NudgeDatabase : RoomDatabase() {
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE block_rules ADD COLUMN autoKickAfterMinutes INTEGER DEFAULT NULL")
+            }
+        }
+
+        /**
+         * Independent block mode for a rule's web domains (issue #21). NULL = inherit the
+         * app-level `mode`, so every existing rule keeps its exact current behaviour.
+         *
+         * The one deliberate behaviour change is the second statement. Rules with `mode = 'NONE'`
+         * AND configured `webDomains` are the bug: web enforcement ran through the app-level mode,
+         * so those domains silently blocked NOTHING — the worst failure class for a blocker. Such
+         * rows exist in the wild (the editor kept previously-entered domains when whole-app
+         * blocking was switched off), and they were only ever reachable by a user who had opted
+         * into web blocking. They are repaired to DELAY rather than HARD_BLOCK: the rule already
+         * carries a `delaySeconds`, and DELAY matches the fallback the editor itself uses when
+         * there is no prior blocking choice to restore. The user can change it in the editor,
+         * which now shows the website mode explicitly.
+         */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE block_rules ADD COLUMN webBlockMode TEXT DEFAULT NULL")
+                db.execSQL(
+                    "UPDATE block_rules SET webBlockMode = 'DELAY' " +
+                        "WHERE mode = 'NONE' AND webDomains IS NOT NULL AND webDomains != ''"
+                )
             }
         }
     }
