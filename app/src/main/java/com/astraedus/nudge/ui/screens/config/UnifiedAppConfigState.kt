@@ -36,6 +36,13 @@ data class UnifiedAppConfigState(
     // Web domain blocking
     val webDomainEnabled: Boolean = false,
     val webDomains: String = "",
+    /**
+     * Mode the configured websites block with while the app itself is NOT blocked
+     * ([blocksWholeApp] false). While the app IS blocked, websites simply follow the app's mode
+     * and this is kept in sync so switching whole-app blocking off does not silently change what
+     * the websites do. Never [BlockMode.NONE] — "off" is expressed by [webDomainEnabled].
+     */
+    val webBlockMode: BlockMode = BlockMode.DELAY,
 
     // Default behavior
     val defaultMode: BlockMode = BlockMode.DELAY,
@@ -82,6 +89,18 @@ data class UnifiedAppConfigState(
      * opens freely and only the feature overrides (Shorts, Reels, …) and the daily limit apply.
      */
     val blocksWholeApp: Boolean get() = defaultMode != BlockMode.NONE
+
+    /**
+     * Whether the shared `delaySeconds` control is meaningful: some live block mode is DELAY or
+     * BREATHING. That is the app's own mode when the app is blocked, and otherwise the website
+     * mode — a web-only rule still needs its countdown length editable.
+     */
+    val showDelayDuration: Boolean
+        get() = if (blocksWholeApp) {
+            defaultMode != BlockMode.HARD_BLOCK
+        } else {
+            webDomainEnabled && webBlockMode != BlockMode.HARD_BLOCK
+        }
 
     companion object {
         val FEATURES_BY_PACKAGE: Map<String, List<FeatureInfo>> = mapOf(

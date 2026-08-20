@@ -12,6 +12,7 @@ import com.astraedus.nudge.domain.model.BlockDecision
 import com.astraedus.nudge.domain.model.BlockMode
 import com.astraedus.nudge.domain.model.BlockRuleData
 import com.astraedus.nudge.domain.model.GroupMembership
+import com.astraedus.nudge.domain.model.WebBlockMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -89,27 +90,37 @@ class EvaluateBlockUseCase @Inject constructor(
      * Checks all enabled rules that have webDomains configured and matches
      * the detected URL against them.
      *
+     * Each matching rule enforces at its OWN web mode ([WebBlockMode.resolve]) rather than the
+     * app-level mode (issue #21) — that is what lets a rule leave the app open while still
+     * blocking the site. A rule whose web mode resolves to [BlockMode.NONE] enforces nothing and
+     * is dropped here, so a URL covered only by such rules still falls through to the generic
+     * content filter instead of being treated as "handled, allowed".
+     *
      * @param urlBarText The text from the browser's URL bar
      * @return BlockDecision and the matching rule's associated packageName (for usage tracking)
      */
     suspend fun evaluateWebDomain(urlBarText: String): WebDomainBlockResult {
         val allRules = blockRuleRepository.getEnabledRules().first()
 
-        // Find rules with webDomains that match the detected URL
-        val matchingRules = allRules.filter { rule ->
-            rule.webDomains != null && WebDomainMatcher.matches(urlBarText, rule.webDomains)
+        // Find rules with webDomains that match the detected URL AND actually enforce something.
+        val matchingRules = allRules.mapNotNull { rule ->
+            if (rule.webDomains == null || !WebDomainMatcher.matches(urlBarText, rule.webDomains)) {
+                return@mapNotNull null
+            }
+            val webMode = WebBlockMode.resolve(rule.mode, rule.webBlockMode)
+            if (webMode == BlockMode.NONE) null else rule to webMode
         }
 
         if (matchingRules.isEmpty()) {
-            // No explicit per-rule web domain match. Fall through to the generic
+            // No enforcing per-rule web domain match. Fall through to the generic
             // content filter (bundled blocklist + keywords) if it is enabled.
             return evaluateContentFilter(urlBarText)
         }
 
         // Convert matching rules to ActiveRules for BlockEngine evaluation
-        val activeRules = matchingRules.map { rule ->
+        val activeRules = matchingRules.map { (rule, webMode) ->
             ActiveRule(
-                mode = try { BlockMode.valueOf(rule.mode) } catch (_: Exception) { BlockMode.HARD_BLOCK },
+                mode = webMode,
                 delaySeconds = rule.delaySeconds,
                 dailyLimitMinutes = rule.dailyLimitMinutes,
                 enabled = rule.enabled,
@@ -118,12 +129,12 @@ class EvaluateBlockUseCase @Inject constructor(
                 scheduleEndMinute = rule.scheduleEndMinute,
                 inAppFeatures = null, // Web domain rules apply as whole-app rules
                 grayscale = rule.grayscale,
-                ruleName = buildWebDomainRuleName(rule.packageName, rule.mode)
+                ruleName = buildWebDomainRuleName(rule.packageName, webMode)
             )
         }
 
         // Use the first matching rule's package for usage stats lookup
-        val trackingPackage = matchingRules.first().packageName ?: "web"
+        val trackingPackage = matchingRules.first().first.packageName ?: "web"
         val dailyUsageMs = dailyUsageMs(trackingPackage, activeRules)
 
         val decision = blockEngine.evaluate(
@@ -207,12 +218,12 @@ class EvaluateBlockUseCase @Inject constructor(
         return withContext(Dispatchers.IO) { usageRepository.getDailyForegroundTimeMs(packageName) }
     }
 
-    private fun buildWebDomainRuleName(packageName: String?, mode: String): String {
+    private fun buildWebDomainRuleName(packageName: String?, mode: BlockMode): String {
         val modeName = when (mode) {
-            "HARD_BLOCK" -> "Hard Block"
-            "DELAY" -> "Delay"
-            "BREATHING" -> "Breathing"
-            else -> mode
+            BlockMode.HARD_BLOCK -> "Hard Block"
+            BlockMode.DELAY -> "Delay"
+            BlockMode.BREATHING -> "Breathing"
+            BlockMode.NONE -> "Off" // unreachable: NONE rules are filtered out before this point
         }
         return "Web - $modeName"
     }

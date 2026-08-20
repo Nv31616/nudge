@@ -28,7 +28,9 @@ data class ExportedRule(
     val showTimeRemaining: Boolean,
     val autoKickCooldownSeconds: Int,
     val webDomains: String? = null,
-    val autoKickAfterMinutes: Int? = null
+    val autoKickAfterMinutes: Int? = null,
+    /** Independent block mode for [webDomains]; null = inherit [mode]. See `BlockRule.webBlockMode`. */
+    val webBlockMode: String? = null
 )
 
 data class ExportedGroup(

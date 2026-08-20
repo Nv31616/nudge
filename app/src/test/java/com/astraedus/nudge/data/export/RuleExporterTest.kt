@@ -258,6 +258,61 @@ class RuleExporterTest {
         assertEquals("instagram.com,www.instagram.com", result.rules[0].webDomains)
     }
 
+    /**
+     * The whole point of `webBlockMode` (issue #21) is a rule that blocks a WEBSITE while leaving
+     * the APP open — `mode = NONE` plus an independent web mode. Losing the field on a backup
+     * restore would silently turn that block off again, which is the exact bug it fixed.
+     */
+    @Test
+    fun `roundtrip preserves an independent webBlockMode on a NONE-mode rule`() {
+        val rules = listOf(
+            BlockRule(
+                id = 1,
+                packageName = "com.instagram.android",
+                mode = "NONE",
+                delaySeconds = 15,
+                enabled = true,
+                webDomains = "instagram.com",
+                webBlockMode = "HARD_BLOCK"
+            )
+        )
+
+        val json = exporter.exportRules(rules, emptyList(), emptyMap())
+        val result = exporter.importRules(json)
+
+        assertNull(result.error)
+        assertEquals(1, result.rules.size)
+        assertEquals("NONE", result.rules[0].mode)
+        assertEquals("HARD_BLOCK", result.rules[0].webBlockMode)
+    }
+
+    @Test
+    fun `import of an older export without webBlockMode inherits the app mode`() {
+        // No webBlockMode key at all -- what every pre-#21 export looks like. Null is the
+        // "inherit the app-level mode" value, i.e. exactly the behaviour those exports had.
+        val json = """
+        {
+          "version": 1,
+          "exportedAt": 1700000000000,
+          "rules": [{
+            "packageName": "com.example.app",
+            "groupName": null,
+            "mode": "DELAY",
+            "delaySeconds": 15,
+            "enabled": true,
+            "webDomains": "example.com"
+          }],
+          "groups": []
+        }
+        """.trimIndent()
+
+        val result = exporter.importRules(json)
+
+        assertNull(result.error)
+        assertEquals(1, result.rules.size)
+        assertNull(result.rules[0].webBlockMode)
+    }
+
     @Test
     fun `export with null webDomains produces null in JSON`() {
         val rules = listOf(
