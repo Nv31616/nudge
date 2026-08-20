@@ -4,6 +4,13 @@ All notable changes to Nudge are documented here. Format follows [Keep a Changel
 
 ## [1.12.0] - 2026-08-20
 
+### Added
+- **Tap "Blocked" or "Walked Away" on the dashboard to see the story behind the numbers.** Two new pages, built from the block history Nudge already keeps on your phone:
+  - **Walked Away → your willpower, visualized.** A ring showing how often you walk away instead of pushing through, an estimate of the time those walk-aways reclaimed, a 24-hour clock revealing when your resolve is strongest and weakest, a per-app leaderboard of what you resist vs. what still wins, and a week-over-week trend showing whether you're getting stronger.
+  - **Blocked → know your temptation patterns.** Totals with a two-week sparkline, blocks by hour of day with your "danger hour" highlighted, worst days of the week, your most-blocked apps with how each is blocked, and a week-by-hour heatmap — your temptation fingerprint.
+  - Both pages switch between the last 7 and 30 days. Everything is computed on your phone from data that never leaves it, like everything else in Nudge.
+- The new pages also count more honestly than the dashboard tiles did: walking away used to be recorded in a way that inflated the raw blocked count, and the insight pages correct for that.
+
 ### Fixed
 - **Apps can no longer slip a video past a block by shrinking it into a floating window** ([#19](https://github.com/astraedus/nudge/issues/19), found by [@polubarev](https://github.com/polubarev)). When Nudge blocked YouTube, YouTube could drop the Short into a picture-in-picture bubble that floats above everything — including a full-screen block. Android gives no app a way to switch that off for another app, so Nudge now spots it happening and, once per app, shows you what is going on with a one-tap link to the setting that stops it (Special app access → Picture-in-picture). It won't ask twice.
 - **Your blocked count no longer inflates on its own.** A video playing in one of those floating windows looked, to Nudge, exactly like you re-opening the app — so it re-blocked and counted a block over and over while you sat there watching. Those events are now recognised for what they are, and the picture-in-picture screen itself records nothing: it is neither a block you hit nor a walk-away.

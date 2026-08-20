@@ -385,6 +385,16 @@ Fix for [#20](https://github.com/astraedus/nudge/issues/20). `importRules` mappe
 - `ui/screens/stats/charts/StreakCounter.kt` — flame icon + streak count + "X days streak" label
 - All charts use Material 3 colorScheme exclusively, handle empty states, no external dependencies.
 
+### Insight pages (v1.12.0) — Willpower + Interventions, reached from the home tiles
+
+The home dashboard's "Blocked" / "Walked Away" tiles (both rows) navigate to `WillpowerScreen` / `InterventionsScreen` (`ui/screens/stats/`, routes in `NavGraph`). All math lives in **`InsightsCalculator.kt`** — pure Kotlin, `ZoneId` passed in, bucketing via java.time (37 tests in `InsightsCalculatorTest`).
+
+- **The denominator invariant.** A walk-away logs a SECOND `usage_events` row (`wasBlocked=1, userChangedMind=1`) alongside the show-time row, so raw `wasBlocked=1` counts ≈ double-count walk-aways. The calculator defines `attempts = max(shown, walkAways)`, `gaveIn = attempts − walkAways`, `rate = walkAways/attempts` — >100%/NaN/negative are structurally impossible, and `walkAways + gaveIn == attempts` holds per bucket. All-time hero numbers route through `overlaysFromAllTimeCounts(blocked, changedMind)` (regression-tested); the home tiles' raw counts are deliberately untouched.
+- **Time reclaimed** = walkAways × per-app mean session length from `ScreenTimeProvider.getPerAppSessionStats` (the primitive `getPerAppScreenTime` now wraps; still one `queryEvents` pass), clamped 1–30 min, 5-min labeled default when unmeasured. Always "est.".
+- Charts (`charts/`): `WalkAwayRing`, `RateBarChart` (24-bar rate-by-hour, volume-weighted alpha; bar and label rows must share the same spacing math), `SegmentedBar`, `Sparkline`, `WeekHourHeatmap` (7×24). `InstalledAppsRepository.resolveIcon` caches icons incl. negative misses for uninstalled apps.
+- Weekly trend: 30d = 4 buckets, oldest absorbs the 2 remainder days; 7d range shows a hint instead of a one-point trend. Hours with <2 attempts are excluded from strongest/weakest-hour callouts.
+- **Known gap**: `UsageRepository.cleanup(retainDays=30)` has NO call site — documented retention is not enforced, events accumulate indefinitely. The insight pages are correct either way (they window in the calculator), but "30-day retention" is currently aspirational.
+
 ## Google Play compliance
 
 ### AccessibilityService prominent disclosure (required by Google Play policy)
