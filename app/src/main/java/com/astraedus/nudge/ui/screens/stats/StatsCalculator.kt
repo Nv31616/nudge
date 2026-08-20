@@ -21,23 +21,6 @@ class StatsCalculator @Inject constructor(
 
     private val todayStart: Long get() = timeTracker.startOfToday()
 
-    fun buildWeeklyData(weekEvents: List<UsageEvent>, referenceDayStartMs: Long = todayStart): List<DayData> {
-        val result = mutableListOf<DayData>()
-
-        for (i in 6 downTo 0) {
-            val dayStart = referenceDayStartMs - i * DAY_MS
-            val dayEnd = dayStart + DAY_MS
-            val dayTotal = weekEvents
-                .filter { it.timestamp in dayStart until dayEnd }
-                .sumOf { it.durationMs }
-
-            val label = getDayLabel(dayStart)
-            result.add(DayData(label = label, totalMs = dayTotal))
-        }
-
-        return result
-    }
-
     /**
      * Build weekly bar chart data from pre-computed daily totals (from UsageStatsManager).
      * @param dailyTotals list of 7 entries, index 0 = 6 days ago, index 6 = reference day.
@@ -72,19 +55,6 @@ class StatsCalculator @Inject constructor(
         }
 
         return result
-    }
-
-    fun buildHourlyData(todayEvents: List<UsageEvent>): List<Long> {
-        val hourlyMs = MutableList(24) { 0L }
-
-        todayEvents.forEach { event ->
-            val cal = Calendar.getInstance(TimeZone.getDefault())
-            cal.timeInMillis = event.timestamp
-            val hour = cal.get(Calendar.HOUR_OF_DAY)
-            hourlyMs[hour] += event.durationMs
-        }
-
-        return hourlyMs
     }
 
     /**

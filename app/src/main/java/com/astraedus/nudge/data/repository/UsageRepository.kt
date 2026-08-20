@@ -59,12 +59,6 @@ class UsageRepository @Inject constructor(
         }
     }
 
-    fun getUsageForDay(dayStart: Long, dayEnd: Long): Flow<List<UsageEvent>> =
-        usageEventDao.getEventsForDay(dayStart, dayEnd)
-
-    fun getTotalDurationForDay(dayStart: Long, dayEnd: Long): Flow<Long?> =
-        usageEventDao.getTotalDurationForDay(dayStart, dayEnd)
-
     fun getEventsSince(since: Long): Flow<List<UsageEvent>> =
         usageEventDao.getEventsSince(since)
 

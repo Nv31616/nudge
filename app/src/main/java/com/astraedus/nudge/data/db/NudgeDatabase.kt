@@ -19,7 +19,7 @@ import com.astraedus.nudge.data.db.entity.UsageEvent
         AppGroupMember::class,
         UsageEvent::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class NudgeDatabase : RoomDatabase() {
@@ -76,6 +76,39 @@ abstract class NudgeDatabase : RoomDatabase() {
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE block_rules ADD COLUMN autoKickAfterMinutes INTEGER DEFAULT NULL")
+            }
+        }
+
+        /**
+         * Drops the dead `usage_events.durationMs` column (issue #22).
+         *
+         * SQLite before 3.35 has no `DROP COLUMN`, and minSdk 26 ships far older engines, so this
+         * is the standard create/copy/drop/rename recreate. The new table must match Room's
+         * generated schema for [com.astraedus.nudge.data.db.entity.UsageEvent] byte for byte or
+         * Room's post-migration validation throws on the next open.
+         *
+         * The column was never written, so nothing of value is copied away — but the ROWS are
+         * user data (block/allow history behind the stats screen) and are carried across.
+         */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `usage_events_new` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`packageName` TEXT NOT NULL, " +
+                        "`timestamp` INTEGER NOT NULL, " +
+                        "`wasBlocked` INTEGER NOT NULL, " +
+                        "`blockMode` TEXT, " +
+                        "`userChangedMind` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "INSERT INTO `usage_events_new` " +
+                        "(`id`, `packageName`, `timestamp`, `wasBlocked`, `blockMode`, `userChangedMind`) " +
+                        "SELECT `id`, `packageName`, `timestamp`, `wasBlocked`, `blockMode`, `userChangedMind` " +
+                        "FROM `usage_events`"
+                )
+                db.execSQL("DROP TABLE `usage_events`")
+                db.execSQL("ALTER TABLE `usage_events_new` RENAME TO `usage_events`")
             }
         }
     }
