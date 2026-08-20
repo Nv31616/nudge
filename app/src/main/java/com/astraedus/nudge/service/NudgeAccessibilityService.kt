@@ -8,6 +8,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import com.astraedus.nudge.data.db.entity.UsageEvent
 import com.astraedus.nudge.data.preferences.NudgePreferences
 import com.astraedus.nudge.data.repository.BlockRuleRepository
@@ -26,6 +27,7 @@ import dagger.hilt.EntryPoint
 import dagger.hilt.InstallIn
 import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.components.SingletonComponent
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -215,30 +217,43 @@ class NudgeAccessibilityService : AccessibilityService() {
             private set
 
         /**
-         * Package the live block overlay is currently asserting a block for, or null when no block
-         * is live. Only meaningful while [isOverlayActive] is true.
+         * Every package we have actually put a block overlay in front of since the process started.
          *
-         * Paired with [isOverlayActive] behind [markOverlayActive] / [markOverlayInactive] rather
-         * than assigned alongside it at each of the (now six) launch and dismissal sites: the two
-         * facts must never disagree, and issue #19's picture-in-picture detection reads them
-         * together to decide whether a window event is the blocked app escaping or a different app
-         * genuinely coming to the front.
+         * Used only to decide whether a picture-in-picture escape is worth EXPLAINING (issue #19):
+         * an app floating in PiP is unremarkable, an app we were blocking floating in PiP is the
+         * escape. Deliberately not "is there a block up right now" — the field failure showed the
+         * escape usually outlives the overlay (the overlay dismisses, the bubble keeps playing), and
+         * the reported repro reaches PiP minutes later via an emergency pass.
+         *
+         * Session-scoped and unbounded-by-design: it can only ever hold packages the user has rules
+         * for, and it is a plain in-memory set that dies with the process.
          */
-        @Volatile
-        var blockedPackage: String? = null
-            private set
+        private val blockedThisSession: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
-        /** The block overlay is now on screen, asserting a block for [packageName]. */
+        /**
+         * The block overlay is now on screen for [packageName].
+         *
+         * Paired with [markOverlayInactive] rather than assigning [isOverlayActive] at each of the
+         * six launch and dismissal sites: this is also where [blockedThisSession] is recorded, and
+         * a launch site that set the flag but forgot the record would silently disable the PiP
+         * explainer for that path.
+         */
         fun markOverlayActive(packageName: String?) {
-            blockedPackage = packageName?.takeIf { it.isNotBlank() }
+            packageName?.takeIf { it.isNotBlank() }?.let { blockedThisSession.add(it) }
             isOverlayActive = true
         }
 
         /** The block overlay is gone (dismissed, completed, or bypassed). */
         fun markOverlayInactive() {
             isOverlayActive = false
-            blockedPackage = null
         }
+
+        /** True if we have put a block overlay in front of [packageName] this session. */
+        internal fun hasBlockedThisSession(packageName: String): Boolean =
+            packageName in blockedThisSession
+
+        /** Test seam: clear the session block record. */
+        internal fun clearBlockedThisSession() = blockedThisSession.clear()
 
         @Volatile
         var passthroughManagerInstance: PassthroughManager? = null
@@ -304,43 +319,6 @@ class NudgeAccessibilityService : AccessibilityService() {
                 !isTransientNonAppPackage(packageName, currentImePackage)
         }
 
-        /**
-         * Issue #19: true when this window event is the app we are actively blocking escaping into a
-         * picture-in-picture window.
-         *
-         * The escape itself is platform behaviour Nudge cannot prevent — a pinned PiP window is
-         * always-on-top, so our fullscreen overlay is the top resumed activity and STILL loses, and
-         * the media keeps playing. The only real remedy is the per-app PiP permission in Settings,
-         * which an app may not change on its own behalf. So this exists to recognise the escape, not
-         * to stop it, and recognising it matters for two separate reasons:
-         *
-         *  1. **Honest stats.** A PiP window fires window events carrying the blocked app's package.
-         *     [isOverlayBypassedByForeground] would read those as the user returning to the app,
-         *     clear the overlay flag, re-evaluate, and log a fresh `wasBlocked` usage event — on
-         *     every event, for an app the user never actually re-opened. The block count would climb
-         *     on its own while the user watched a Short.
-         *  2. **Explaining it once.** The user otherwise just sees Nudge failing.
-         *
-         * Cheap rejections run before [pipPackage] is invoked, because resolving the PiP owner means
-         * reading the accessibility window list (a binder call). Requiring the event's package to
-         * match the blocked one first rejects the overwhelmingly common case on this branch — events
-         * from our own overlay window — for free.
-         *
-         * @param pipPackage owner of the current picture-in-picture window, or null when nothing is
-         *   in PiP / it could not be read. An unresolved owner is never a match: the caller keeps
-         *   its normal bypass handling rather than suppressing a genuine re-block on a guess.
-         */
-        internal fun isPipEscapeOfActiveBlock(
-            eventType: Int,
-            packageName: String,
-            blockedPackage: String?,
-            pipPackage: () -> String?
-        ): Boolean {
-            if (blockedPackage == null) return false
-            if (eventType !in WINDOW_CHANGE_EVENT_TYPES) return false
-            if (packageName != blockedPackage) return false
-            return pipPackage() == blockedPackage
-        }
     }
 
     /** Cached once: our own user-visible app label, used to anchor escape-screen detection. */
@@ -389,11 +367,19 @@ class NudgeAccessibilityService : AccessibilityService() {
     @Volatile private var pipEscapePromptedCached: Set<String> = emptySet()
 
     /**
-     * Reads the accessibility window list to answer "what is in picture-in-picture right now?", with
-     * its own short result cache. Only ever consulted after the cheap rejections in
-     * [isPipEscapeOfActiveBlock].
+     * Reads the accessibility window list to answer "which packages are in picture-in-picture right
+     * now?". Consulted only from [refreshPipOnlyPackages], on window-change events.
      */
     private val pipWindowProbe = PipWindowProbe(readWindows = ::readPipWindows)
+
+    /**
+     * Packages whose ONLY presence on screen is a floating picture-in-picture window (issue #19).
+     *
+     * Refreshed on window-change events (a PiP window can only appear or vanish via one) and read on
+     * EVERY event as a zero-cost set lookup — which is what makes it affordable to gate the whole
+     * event pipeline on it rather than one branch of it.
+     */
+    @Volatile private var pipOnlyPackagesCached: Set<String> = emptySet()
 
     /** Refreshes [currentImePackage] whenever the default keyboard changes. */
     private val imeSettingObserver by lazy {
@@ -405,16 +391,16 @@ class NudgeAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Read and cache the current default IME's package. The secure setting value looks like
-     * `org.futo.inputmethod.latin/.LatinIME`; we keep only the package half. Fails soft to null.
-     */
-    /**
      * Snapshot the accessibility window list for [pipWindowProbe] (issue #19).
      *
      * The owner of a window is only resolved for windows ALREADY flagged as picture-in-picture:
      * [android.view.accessibility.AccessibilityWindowInfo.getRoot] is a binder read per window, and
-     * a device has many windows but at most one in PiP. Non-PiP windows therefore come back with a
-     * null package, which [PipWindowProbe.pipPackage] ignores.
+     * a device has many windows but at most one app in PiP. Non-PiP windows therefore come back with
+     * a null package, which [PipWindowProbe.pipPackages] ignores.
+     *
+     * [AccessibilityWindowInfo.TYPE_APPLICATION] is carried through because SystemUI's
+     * "Picture-in-Picture menu" window is ALSO flagged PiP and sorts ahead of the app's own window —
+     * see [PipWindowProbe.pipPackages] for the field failure that caused.
      *
      * Fails soft to an empty list: an unreadable window list must never crash the service, and
      * "nothing in PiP" leaves every existing code path behaving exactly as it did before this fix.
@@ -424,11 +410,78 @@ class NudgeAccessibilityService : AccessibilityService() {
             val inPip = window.isInPictureInPictureMode
             PipWindow(
                 packageName = if (inPip) window.root?.packageName?.toString() else null,
-                isPictureInPicture = inPip
+                isPictureInPicture = inPip,
+                isApplicationWindow = window.type == AccessibilityWindowInfo.TYPE_APPLICATION
             )
         }
     } catch (_: Exception) {
         emptyList()
+    }
+
+    /**
+     * Recompute [pipOnlyPackagesCached] (issue #19). Called on window-change events only.
+     *
+     * The active-window read happens only when something is actually in PiP, so the steady-state
+     * cost of this is one throttled `getWindows()` per window-change burst.
+     *
+     * When the set CHANGES we log it and run the explainer decision. Doing both here rather than
+     * per-event is what keeps the logging bounded — and the log line is unconditional, which the
+     * previous implementation got wrong: it logged only in the branch that actually showed the
+     * explainer, so the field failure produced total silence with no way to tell whether detection
+     * had fired and been suppressed, or never fired at all.
+     */
+    private fun refreshPipOnlyPackages() {
+        val inPip = pipWindowProbe.packagesInPictureInPicture()
+        val next = if (inPip.isEmpty()) {
+            emptySet()
+        } else {
+            PipWindowProbe.pipOnlyPackages(inPip, activeWindowPackageOrNull())
+        }
+        if (next == pipOnlyPackagesCached) return
+
+        pipOnlyPackagesCached = next
+        entryPoint.nudgeLogger().i("picture-in-picture windows changed pipOnly=$next")
+        next.forEach { maybeExplainPipEscape(it) }
+    }
+
+    /**
+     * Show the picture-in-picture explainer for [packageName], at most once ever (issue #19).
+     *
+     * Gated on [hasBlockedThisSession]: an app floating in PiP is unremarkable, an app we were
+     * blocking floating in PiP is the escape worth explaining. Both suppression reasons are logged,
+     * because "detection fired but stayed silent" and "detection never fired" are indistinguishable
+     * from the outside and that ambiguity cost a whole release cycle.
+     */
+    private fun maybeExplainPipEscape(packageName: String) {
+        if (!hasBlockedThisSession(packageName)) {
+            entryPoint.nudgeLogger().d(
+                "pip escape not explained package=$packageName reason=never_blocked_this_session"
+            )
+            return
+        }
+        if (packageName in pipEscapePromptedCached) {
+            entryPoint.nudgeLogger().d(
+                "pip escape not explained package=$packageName reason=already_explained"
+            )
+            return
+        }
+
+        // Mark before the DataStore write and before starting the activity, so a burst of window
+        // changes cannot stack explainers while the write is in flight.
+        pipEscapePromptedCached = pipEscapePromptedCached + packageName
+        serviceScope.launch {
+            entryPoint.nudgePreferences().recordPipEscapePrompted(packageName)
+        }
+
+        entryPoint.nudgeLogger().i(
+            "picture-in-picture escape detected package=$packageName — explaining once"
+        )
+
+        val intent = Intent(applicationContext, PipEscapeActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra(PipEscapeActivity.EXTRA_PACKAGE_NAME, packageName)
+        }
+        applicationContext.startActivity(intent)
     }
 
     private fun refreshCurrentImePackage() {
@@ -563,22 +616,26 @@ class NudgeAccessibilityService : AccessibilityService() {
         // costs nothing.
         if (PipEscapeActivity.isActive) return
 
-        if (isOverlayActive) {
-            // Issue #19: before anything else, check whether this is the blocked app escaping into a
-            // picture-in-picture window rather than the user genuinely returning to it. The bypass
-            // check below cannot tell the two apart — both look like the blocked package firing a
-            // window event — and getting it wrong re-blocks and re-logs on every PiP event.
-            if (isPipEscapeOfActiveBlock(
-                    eventType = event.eventType,
-                    packageName = packageName,
-                    blockedPackage = blockedPackage,
-                    pipPackage = { pipWindowProbe.packageInPictureInPicture() }
-                )
-            ) {
-                handlePipEscape(packageName)
-                return
-            }
+        // Issue #19, and the root cause of the v1.12.0 field failure. A picture-in-picture window
+        // fires accessibility events carrying its app's package, but that app is NOT in front — the
+        // user is somewhere else entirely. Every evaluation path below is built on "an event
+        // carrying package P means P is the foreground app", so a PiP bubble walks straight into
+        // them: YouTube was re-blocked nine times in five minutes and the all-time Blocked count
+        // rose by eleven during ONE incident, while the tester was navigating inside Nudge itself.
+        //
+        // The first attempt at this fix only guarded the branch where a block overlay was live, so
+        // it missed the common case entirely — the overlay dismisses (markOverlayInactive) and the
+        // orphaned bubble keeps firing events with no block in sight.
+        //
+        // So the gate is general and sits ahead of everything: a package present only as a PiP
+        // window is not the foreground app, and its events drive nothing — no evaluation, no block,
+        // no UsageEvent, no overlay bypass, no interaction counting.
+        if (event.eventType in WINDOW_CHANGE_EVENT_TYPES) refreshPipOnlyPackages()
+        if (packageName in pipOnlyPackagesCached) {
+            return
+        }
 
+        if (isOverlayActive) {
             // If a real app has come to the foreground, the overlay is no longer covering it — the
             // user tabbed out and back into the blocked app, orphaning the overlay in its own task.
             // Clear the stale flag and fall through to normal evaluation so the block re-asserts.
@@ -666,37 +723,6 @@ class NudgeAccessibilityService : AccessibilityService() {
                 }
             }
         }
-    }
-
-    /**
-     * Issue #19: the blocked app has escaped into picture-in-picture. Keep the block asserted (the
-     * caller swallows the event) and explain the limitation to the user ONCE for this app.
-     *
-     * Deliberately does NOT: kill the PiP window (there is no API for it, and an app blocker force-
-     * closing another app's window would be both impossible and hostile), log a usage event (a
-     * platform escape is neither a block the user hit nor a walk-away — recording it would inflate
-     * the blocked count every time a Short auto-played), or touch passthrough.
-     *
-     * The prompted set is marked synchronously BEFORE the DataStore write and before starting the
-     * activity, so a burst of window events cannot stack explainers while the write is in flight.
-     */
-    private fun handlePipEscape(packageName: String) {
-        if (packageName in pipEscapePromptedCached) return
-
-        pipEscapePromptedCached = pipEscapePromptedCached + packageName
-        serviceScope.launch {
-            entryPoint.nudgePreferences().recordPipEscapePrompted(packageName)
-        }
-
-        entryPoint.nudgeLogger().i(
-            "picture-in-picture escape detected package=$packageName — explaining once"
-        )
-
-        val intent = Intent(applicationContext, PipEscapeActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            putExtra(PipEscapeActivity.EXTRA_PACKAGE_NAME, packageName)
-        }
-        applicationContext.startActivity(intent)
     }
 
     private fun isOwnAppWindowEvent(event: AccessibilityEvent): Boolean {

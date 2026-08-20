@@ -1,210 +1,141 @@
 package com.astraedus.nudge.service
 
-import android.view.accessibility.AccessibilityEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Tests for issue #19: picture-in-picture defeats feature blocking.
+ * Tests for issue #19: picture-in-picture defeats blocking — and for the v1.12.0 field failure of
+ * the first attempt at fixing it.
  *
- * The bug: when the block overlay backgrounds YouTube, YouTube enters PiP and the Short keeps
- * playing in a floating always-on-top window. The overlay is correctly fullscreen and the top
- * resumed activity and still loses — platform behaviour, not an overlay bug.
+ * **What actually happens.** An app in PiP keeps playing in a floating always-on-top window. Our
+ * block overlay is fullscreen and the top resumed activity and still loses; that is platform
+ * behaviour. Nudge cannot flip the per-app PiP permission on the user's behalf, so the fix is
+ * detect-and-deep-link.
  *
- * Nudge cannot flip the per-app PiP permission on the user's behalf, so the fix is
- * detect-and-deep-link. Two things have to be right, and both are covered here:
+ * **Field failure 1 — detection never fired, silently.** On a live Pixel 3 / API 31 bubble the
+ * accessibility window list contains TWO windows flagged `pictureInPicture=true`:
+ * SystemUI's `Picture-in-Picture menu` (TYPE_SYSTEM, listed first) and the app's own window
+ * (TYPE_APPLICATION). The first implementation took the first flagged window, resolved its owner to
+ * `com.android.systemui`, never matched the blocked package, and returned false without logging.
+ * Hence [PipWindowProbe.pipPackages] filtering to application windows, and returning a SET.
  *
- *  1. **Detection** — recognise the escape without paying for a window-list binder read on every
- *     event ([NudgeAccessibilityService.isPipEscapeOfActiveBlock] + [PipWindowProbe]).
- *  2. **Honest stats** — a PiP window fires window events carrying the blocked app's package, which
- *     [NudgeAccessibilityService.isOverlayBypassedByForeground] reads as "the user came back". Left
- *     alone that clears the overlay flag, re-evaluates and logs a fresh `wasBlocked` usage event on
- *     every PiP event, so the blocked count would climb on its own while a Short auto-played.
+ * **Field failure 2 — the stat-inflation loop outlived the block.** The first fix only looked for
+ * an escape while a block overlay was live. In reality the overlay dismisses and the orphaned
+ * bubble keeps firing events carrying the app's package, each read as a fresh foreground entry:
+ * nine re-blocks in five minutes, +11 on the all-time Blocked count, firing while the tester was
+ * inside Nudge itself. Hence [PipWindowProbe.pipOnlyPackages] and a gate over the whole pipeline.
  */
 class PipEscapeTest {
 
     private val youtube = "com.google.android.youtube"
-    private val instagram = "com.instagram.android"
-    private val ownPackage = "com.astraedus.nudge"
+    private val systemui = "com.android.systemui"
+    private val launcher = "com.google.android.apps.nexuslauncher"
 
-    private fun neverRead(): String? =
-        throw AssertionError("the PiP window list must not be read for a cheaply-rejected event")
+    /**
+     * The window list exactly as `dumpsys accessibility` reported it on the Pixel 3 with a live
+     * YouTube PiP bubble and the launcher in front. Order matters: the SystemUI PiP menu really
+     * does come first.
+     */
+    private fun livePixelPipWindows() = listOf(
+        PipWindow(packageName = null, isPictureInPicture = false, isApplicationWindow = false),
+        PipWindow(packageName = null, isPictureInPicture = false, isApplicationWindow = false),
+        PipWindow(packageName = systemui, isPictureInPicture = true, isApplicationWindow = false),
+        PipWindow(packageName = youtube, isPictureInPicture = true, isApplicationWindow = true),
+        PipWindow(packageName = launcher, isPictureInPicture = false, isApplicationWindow = true)
+    )
 
-    // --- isPipEscapeOfActiveBlock: the decision ---
+    // --- pipPackages: the regression that made detection silently impossible ---
 
     @Test
-    fun `the blocked app slipping into picture-in-picture is recognised as an escape`() {
-        // The issue #19 scenario: we are blocking YouTube, YouTube now owns a PiP window.
-        assertTrue(
-            NudgeAccessibilityService.isPipEscapeOfActiveBlock(
-                eventType = AccessibilityEvent.TYPE_WINDOWS_CHANGED,
-                packageName = youtube,
-                blockedPackage = youtube,
-                pipPackage = { youtube }
-            )
-        )
+    fun `the app is found even though SystemUI's PiP menu is flagged PiP and sorts first`() {
+        // Field failure 1, pinned. Taking the first flagged window yields com.android.systemui,
+        // which never matches a blocked package, so detection returned false forever.
+        assertEquals(setOf(youtube), PipWindowProbe.pipPackages(livePixelPipWindows()))
     }
 
     @Test
-    fun `a window state change from the blocked app in PiP is an escape, not a foreground return`() {
-        // This is the stats-honesty case. isOverlayBypassedByForeground says "bypass" for exactly
-        // this input; the PiP check runs first and must claim it, otherwise every PiP event
-        // re-blocks and logs another wasBlocked event for an app the user never re-opened.
-        assertTrue(
-            NudgeAccessibilityService.isPipEscapeOfActiveBlock(
-                eventType = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-                packageName = youtube,
-                blockedPackage = youtube,
-                pipPackage = { youtube }
-            )
-        )
-        // Sanity: the bypass check really would have claimed it, so the ordering above is load-bearing.
-        assertTrue(
-            NudgeAccessibilityService.isOverlayBypassedByForeground(
-                eventType = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-                packageName = youtube,
-                ownPackageName = ownPackage,
-                currentImePackage = null
-            )
-        )
-    }
-
-    @Test
-    fun `the blocked app genuinely returning to the foreground is NOT an escape`() {
-        // Nothing in PiP: the user really did tab back in, so the normal re-block path must run.
-        assertFalse(
-            NudgeAccessibilityService.isPipEscapeOfActiveBlock(
-                eventType = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-                packageName = youtube,
-                blockedPackage = youtube,
-                pipPackage = { null }
-            )
-        )
-    }
-
-    @Test
-    fun `a different app in PiP while we block this one is not this block's escape`() {
-        // A podcast floating in PiP while Instagram is blocked is not Instagram escaping. Suppressing
-        // the bypass here would wrongly hold a block the user actually walked back into.
-        assertFalse(
-            NudgeAccessibilityService.isPipEscapeOfActiveBlock(
-                eventType = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-                packageName = instagram,
-                blockedPackage = instagram,
-                pipPackage = { youtube }
-            )
-        )
-    }
-
-    @Test
-    fun `a different app coming to the foreground is rejected without reading the window list`() {
-        // Cost + correctness in one: the event package must match the blocked package before the
-        // binder read, and a genuine switch to another app must still reach the bypass path.
-        assertFalse(
-            NudgeAccessibilityService.isPipEscapeOfActiveBlock(
-                eventType = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-                packageName = instagram,
-                blockedPackage = youtube,
-                pipPackage = ::neverRead
-            )
-        )
-    }
-
-    @Test
-    fun `our own overlay's window events are rejected without reading the window list`() {
-        // The overwhelmingly common event on this branch: the block overlay's own window churning
-        // while it is on screen. It must cost nothing.
-        assertFalse(
-            NudgeAccessibilityService.isPipEscapeOfActiveBlock(
-                eventType = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-                packageName = ownPackage,
-                blockedPackage = youtube,
-                pipPackage = ::neverRead
-            )
-        )
-    }
-
-    @Test
-    fun `content-change churn never reads the window list`() {
-        // Content changes arrive in bursts (a device capture measured ~26k in a few minutes of
-        // Instagram use). Only true window changes may reach the binder read.
-        assertFalse(
-            NudgeAccessibilityService.isPipEscapeOfActiveBlock(
-                eventType = AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
-                packageName = youtube,
-                blockedPackage = youtube,
-                pipPackage = ::neverRead
-            )
-        )
-    }
-
-    @Test
-    fun `with no live block there is nothing to escape from, and nothing is read`() {
-        assertFalse(
-            NudgeAccessibilityService.isPipEscapeOfActiveBlock(
-                eventType = AccessibilityEvent.TYPE_WINDOWS_CHANGED,
-                packageName = youtube,
-                blockedPackage = null,
-                pipPackage = ::neverRead
-            )
-        )
-    }
-
-    // --- PipWindowProbe.pipPackage: picking the PiP owner out of the window list ---
-
-    @Test
-    fun `the PiP window's owner is picked out of a list of ordinary windows`() {
-        val owner = PipWindowProbe.pipPackage(
-            listOf(
-                PipWindow(packageName = null, isPictureInPicture = false),
-                PipWindow(packageName = null, isPictureInPicture = false),
-                PipWindow(packageName = youtube, isPictureInPicture = true)
-            )
-        )
-        assertEquals(youtube, owner)
-    }
-
-    @Test
-    fun `no PiP window means no owner`() {
-        assertNull(
-            PipWindowProbe.pipPackage(
+    fun `a PiP-flagged system window alone yields no app`() {
+        assertEquals(
+            emptySet<String>(),
+            PipWindowProbe.pipPackages(
                 listOf(
-                    PipWindow(packageName = null, isPictureInPicture = false),
-                    PipWindow(packageName = youtube, isPictureInPicture = false)
+                    PipWindow(systemui, isPictureInPicture = true, isApplicationWindow = false)
                 )
             )
         )
-        assertNull(PipWindowProbe.pipPackage(emptyList()))
+    }
+
+    @Test
+    fun `nothing in PiP yields nothing`() {
+        assertEquals(emptySet<String>(), PipWindowProbe.pipPackages(emptyList()))
+        assertEquals(
+            emptySet<String>(),
+            PipWindowProbe.pipPackages(
+                listOf(PipWindow(youtube, isPictureInPicture = false, isApplicationWindow = true))
+            )
+        )
     }
 
     @Test
     fun `a PiP window whose owner could not be resolved is skipped, never guessed at`() {
-        // getRoot() can fail or return null. The result is compared against the package we are
-        // blocking, so a guess here would suppress a genuine re-block.
-        assertNull(
-            PipWindowProbe.pipPackage(
-                listOf(
-                    PipWindow(packageName = null, isPictureInPicture = true),
-                    PipWindow(packageName = "  ", isPictureInPicture = true)
-                )
-            )
-        )
-        // ...but a resolvable one later in the list is still found.
+        // getRoot() can fail or return null. Callers compare the result against packages they are
+        // blocking, so a guess would suppress a real block.
         assertEquals(
-            youtube,
-            PipWindowProbe.pipPackage(
+            emptySet<String>(),
+            PipWindowProbe.pipPackages(
                 listOf(
-                    PipWindow(packageName = null, isPictureInPicture = true),
-                    PipWindow(packageName = youtube, isPictureInPicture = true)
+                    PipWindow(null, isPictureInPicture = true, isApplicationWindow = true),
+                    PipWindow("  ", isPictureInPicture = true, isApplicationWindow = true)
                 )
             )
         )
     }
 
-    // --- PipWindowProbe: the throttle that keeps the binder read off the hot path ---
+    // --- pipOnlyPackages: "has a window" is not "is the foreground app" ---
+
+    @Test
+    fun `an app in PiP while the user is elsewhere is PiP-only`() {
+        // The orphaned-bubble case: the launcher (or Nudge itself) is in front, YouTube is a bubble.
+        assertEquals(
+            setOf(youtube),
+            PipWindowProbe.pipOnlyPackages(setOf(youtube), activeWindowPackage = launcher)
+        )
+    }
+
+    @Test
+    fun `an app in PiP that IS the active window is not PiP-only`() {
+        // Expanding the bubble back to fullscreen must re-block normally, not be swallowed.
+        assertEquals(
+            emptySet<String>(),
+            PipWindowProbe.pipOnlyPackages(setOf(youtube), activeWindowPackage = youtube)
+        )
+    }
+
+    @Test
+    fun `an unreadable active window still counts PiP as PiP-only`() {
+        // A window in PiP is by definition not the fullscreen foreground app; the active-window
+        // read is only a guard for the expand transition. A missed block self-corrects when PiP
+        // ends, whereas guessing the other way resurrects the re-block storm.
+        assertEquals(
+            setOf(youtube),
+            PipWindowProbe.pipOnlyPackages(setOf(youtube), activeWindowPackage = null)
+        )
+    }
+
+    @Test
+    fun `the whole live-device pipeline resolves to exactly the escaping app`() {
+        // End to end over the real captured window list: raw windows -> app in PiP -> PiP-only.
+        val pip = PipWindowProbe.pipPackages(livePixelPipWindows())
+        val pipOnly = PipWindowProbe.pipOnlyPackages(pip, activeWindowPackage = launcher)
+
+        assertTrue("the escaping app is gated", youtube in pipOnly)
+        assertFalse("SystemUI must never be gated", systemui in pipOnly)
+        assertFalse("the real foreground app must never be gated", launcher in pipOnly)
+    }
+
+    // --- the throttle that keeps the binder read off the hot path ---
 
     @Test
     fun `repeat questions inside the throttle window reuse one window read`() {
@@ -215,15 +146,15 @@ class PipEscapeTest {
             clock = { now },
             readWindows = {
                 reads++
-                listOf(PipWindow(youtube, isPictureInPicture = true))
+                livePixelPipWindows()
             }
         )
 
-        assertEquals(youtube, probe.packageInPictureInPicture())
+        assertEquals(setOf(youtube), probe.packagesInPictureInPicture())
         now = 1_100L
-        assertEquals(youtube, probe.packageInPictureInPicture())
+        assertEquals(setOf(youtube), probe.packagesInPictureInPicture())
         now = 1_499L
-        assertEquals(youtube, probe.packageInPictureInPicture())
+        assertEquals(setOf(youtube), probe.packagesInPictureInPicture())
 
         assertEquals("a burst of window events must cost one binder read, not three", 1, reads)
     }
@@ -238,31 +169,79 @@ class PipEscapeTest {
             clock = { now },
             readWindows = {
                 reads++
-                if (inPip) listOf(PipWindow(youtube, isPictureInPicture = true)) else emptyList()
+                if (inPip) livePixelPipWindows() else emptyList()
             }
         )
 
-        assertEquals(youtube, probe.packageInPictureInPicture())
+        assertEquals(setOf(youtube), probe.packagesInPictureInPicture())
         inPip = false
         now = 1_500L
-        assertNull("PiP closing must be observed on the next read", probe.packageInPictureInPicture())
+        assertEquals(
+            "PiP closing must be observed so normal blocking resumes",
+            emptySet<String>(),
+            probe.packagesInPictureInPicture()
+        )
         assertEquals(2, reads)
     }
 
     @Test
     fun `the very first question always reads (no false cache hit at time zero)`() {
         // Regression guard for the sentinel: a naive `now - lastReadAt < throttle` with a zero-
-        // initialised timestamp reports a cache hit at clock 0 and the probe answers null forever.
+        // initialised timestamp reports a cache hit at clock 0 and the probe answers "nothing in
+        // PiP" forever — which would silently disable the whole feature.
         var reads = 0
         val probe = PipWindowProbe(
             throttleMs = 500L,
             clock = { 0L },
             readWindows = {
                 reads++
-                listOf(PipWindow(youtube, isPictureInPicture = true))
+                livePixelPipWindows()
             }
         )
-        assertEquals(youtube, probe.packageInPictureInPicture())
+        assertEquals(setOf(youtube), probe.packagesInPictureInPicture())
         assertEquals(1, reads)
+    }
+
+    // --- the explainer's "was this app actually blocked" gate ---
+
+    @Test
+    fun `only apps we actually blocked this session are worth explaining`() {
+        NudgeAccessibilityService.clearBlockedThisSession()
+        try {
+            assertFalse(
+                "an app floating in PiP that Nudge never blocked is unremarkable",
+                NudgeAccessibilityService.hasBlockedThisSession(youtube)
+            )
+
+            NudgeAccessibilityService.markOverlayActive(youtube)
+            assertTrue(
+                "showing a block overlay for it is what makes a later PiP an escape",
+                NudgeAccessibilityService.hasBlockedThisSession(youtube)
+            )
+
+            // The record must OUTLIVE the overlay: the reported repro reaches PiP minutes after the
+            // block, via an emergency pass, with no overlay on screen. Tying the explainer to a live
+            // block is exactly what made the first fix miss the real-world case.
+            NudgeAccessibilityService.markOverlayInactive()
+            assertTrue(
+                NudgeAccessibilityService.hasBlockedThisSession(youtube)
+            )
+        } finally {
+            NudgeAccessibilityService.clearBlockedThisSession()
+        }
+    }
+
+    @Test
+    fun `a blank package is never recorded as blocked`() {
+        NudgeAccessibilityService.clearBlockedThisSession()
+        try {
+            NudgeAccessibilityService.markOverlayActive(null)
+            NudgeAccessibilityService.markOverlayActive("")
+            NudgeAccessibilityService.markOverlayActive("   ")
+            assertFalse(NudgeAccessibilityService.hasBlockedThisSession(""))
+            assertFalse(NudgeAccessibilityService.hasBlockedThisSession("   "))
+        } finally {
+            NudgeAccessibilityService.clearBlockedThisSession()
+        }
     }
 }
