@@ -1,0 +1,27 @@
+Categories:
+  - Security
+  - System
+License: GPL-3.0-only
+AuthorName: Astraedus
+AuthorEmail: theagentthatcould@gmail.com
+AuthorWebSite: https://github.com/astraedus
+SourceCode: https://github.com/astraedus/nudge
+IssueTracker: https://github.com/astraedus/nudge/issues
+
+AutoName: Nudge - App Blocker
+
+RepoType: git
+Repo: https://github.com/astraedus/nudge.git
+
+Builds:
+  - versionName: 1.9.0
+    versionCode: 33
+    commit: 592c86b726e62cf3e72f1a8d086ffabb59322a72
+    subdir: app
+    gradle:
+      - yes
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v
+CurrentVersion: 1.9.0
+CurrentVersionCode: 33
