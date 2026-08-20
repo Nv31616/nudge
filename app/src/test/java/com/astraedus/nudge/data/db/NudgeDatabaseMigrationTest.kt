@@ -1,6 +1,7 @@
 package com.astraedus.nudge.data.db
 
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.astraedus.nudge.data.db.entity.UsageEvent
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
@@ -86,6 +87,50 @@ class NudgeDatabaseMigrationTest {
     }
 
     @Test
+    fun `MIGRATION_8_9 recreates usage_events without durationMs and keeps every row`() {
+        val db = RecordingDatabase()
+
+        NudgeDatabase.MIGRATION_8_9.migrate(db.proxy)
+
+        assertEquals("expected create/copy/drop/rename, got: ${db.sql}", 4, db.sql.size)
+        val (create, copy, drop, rename) = db.sql
+
+        // SQLite < 3.35 has no DROP COLUMN, and minSdk 26 predates it — recreate is the only way.
+        assert(create.startsWith("CREATE TABLE IF NOT EXISTS `usage_events_new`")) { create }
+        // Must match Room's generated schema for UsageEvent exactly or validation fails on open.
+        assert(create.contains("`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL")) { create }
+        listOf("packageName", "timestamp", "wasBlocked", "blockMode", "userChangedMind")
+            .forEach { assert(create.contains("`$it`")) { "missing column $it in: $create" } }
+        assert(!create.contains("durationMs")) { "durationMs must not be recreated: $create" }
+
+        // The rows are user data (the stats screen's block/allow history) — never drop-and-start-over.
+        assert(copy.startsWith("INSERT INTO `usage_events_new`")) { copy }
+        assert(copy.contains("SELECT")) { copy }
+        assert(copy.contains("FROM `usage_events`")) { copy }
+        assert(!copy.contains("durationMs")) { copy }
+
+        assertEquals("DROP TABLE `usage_events`", drop)
+        assertEquals("ALTER TABLE `usage_events_new` RENAME TO `usage_events`", rename)
+    }
+
+    @Test
+    fun `usage_events entity declares no duration field`() {
+        // Class-level guard, not an instance one: this table records block/allow DECISIONS.
+        // Any duration-shaped column on it has no write path (issue #22) and every reader that
+        // sums it silently reports 0 — which is exactly how the daily-limit bug (#14) shipped.
+        val durationFields = UsageEvent::class.java.declaredFields
+            .map { it.name }
+            .filter { it.contains("duration", ignoreCase = true) }
+
+        assertEquals(
+            "usage_events must not carry duration columns — screen time comes from " +
+                "UsageStatsManager via ScreenTimeProvider. Found: $durationFields",
+            emptyList<String>(),
+            durationFields
+        )
+    }
+
+    @Test
     fun `all migrations registered from version 1 to current`() {
         val allMigrations = listOf(
             NudgeDatabase.MIGRATION_1_2,
@@ -94,10 +139,11 @@ class NudgeDatabaseMigrationTest {
             NudgeDatabase.MIGRATION_4_5,
             NudgeDatabase.MIGRATION_5_6,
             NudgeDatabase.MIGRATION_6_7,
-            NudgeDatabase.MIGRATION_7_8
+            NudgeDatabase.MIGRATION_7_8,
+            NudgeDatabase.MIGRATION_8_9
         )
 
-        val currentVersion = 8
+        val currentVersion = 9
 
         // Every version gap from 1 to current must have a migration
         for (v in 1 until currentVersion) {
