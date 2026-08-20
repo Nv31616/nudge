@@ -11,6 +11,9 @@ All notable changes to Nudge are documented here. Format follows [Keep a Changel
   - Both pages switch between the last 7 and 30 days. Everything is computed on your phone from data that never leaves it, like everything else in Nudge.
 - The new pages also count more honestly than the dashboard tiles did: walking away used to be recorded in a way that inflated the raw blocked count, and the insight pages correct for that.
 
+### Fixed
+- **"I changed my mind" now reliably takes you home.** Tapping it raced the block screen's own dismissal, so you could land back inside the app you had just decided to walk away from. It now uses the same reliable go-home action as the rest of Nudge, records your walk-away exactly once — under a countdown, a breathing exercise, a hard block, or a cooldown — and a rare storage hiccup during that moment can no longer crash the app.
+
 ## [1.12.0] - 2026-08-20
 
 ### Fixed
