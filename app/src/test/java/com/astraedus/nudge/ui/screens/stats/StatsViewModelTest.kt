@@ -92,69 +92,6 @@ class StatsViewModelTest {
         assertEquals(7, streak)
     }
 
-    // --- Hourly heatmap tests ---
-
-    @Test
-    fun `buildHourlyData returns 24 zeroes for empty events`() {
-        val hourly = calculator.buildHourlyData(emptyList())
-        assertEquals(24, hourly.size)
-        assertTrue(hourly.all { it == 0L })
-    }
-
-    @Test
-    fun `buildHourlyData buckets events by hour`() {
-        val todayStart = timeTracker.startOfToday()
-        val hourMs = 60L * 60L * 1000L
-
-        val events = listOf(
-            makeEvent(todayStart + 9 * hourMs + 1000, durationMs = 5000),
-            makeEvent(todayStart + 9 * hourMs + 30000, durationMs = 3000),
-            makeEvent(todayStart + 14 * hourMs + 1000, durationMs = 10000),
-        )
-
-        val hourly = calculator.buildHourlyData(events)
-        assertEquals(24, hourly.size)
-        assertEquals(8000L, hourly[9])
-        assertEquals(10000L, hourly[14])
-        assertEquals(0L, hourly[0])
-        assertEquals(0L, hourly[23])
-    }
-
-    // --- Weekly data tests ---
-
-    @Test
-    fun `buildWeeklyData returns 7 entries`() {
-        val weekly = calculator.buildWeeklyData(emptyList())
-        assertEquals(7, weekly.size)
-    }
-
-    @Test
-    fun `buildWeeklyData sums per day correctly`() {
-        val todayStart = timeTracker.startOfToday()
-        val dayMs = 24L * 60L * 60L * 1000L
-
-        val events = listOf(
-            makeEvent(todayStart + 1000, durationMs = 60000),
-            makeEvent(todayStart + 5000, durationMs = 40000),
-            makeEvent(todayStart - dayMs + 1000, durationMs = 120000),
-        )
-
-        val weekly = calculator.buildWeeklyData(events)
-        // Last entry is today
-        assertEquals(100000L, weekly.last().totalMs)
-        // Second to last is yesterday
-        assertEquals(120000L, weekly[weekly.size - 2].totalMs)
-    }
-
-    @Test
-    fun `buildWeeklyData has correct day labels`() {
-        val weekly = calculator.buildWeeklyData(emptyList())
-        val validLabels = setOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        weekly.forEach { day ->
-            assertTrue("Label '${day.label}' not in valid set", day.label in validLabels)
-        }
-    }
-
     // --- Trend data tests ---
 
     @Test
@@ -224,24 +161,6 @@ class StatsViewModelTest {
         assertTrue("All should be 0 when no data", weekly.all { it.totalMs == 0L })
     }
 
-    // --- Regression: durationMs=0 events produce zero screen time ---
-
-    @Test
-    fun `buildWeeklyData shows zero when events have no durationMs - documents the old bug`() {
-        val todayStart = timeTracker.startOfToday()
-
-        // Simulate real logged events: durationMs is always 0 (the bug's root cause)
-        val events = listOf(
-            makeEvent(todayStart + 1000, durationMs = 0L, wasBlocked = true),
-            makeEvent(todayStart + 5000, durationMs = 0L),
-            makeEvent(todayStart + 10000, durationMs = 0L, wasBlocked = true),
-        )
-
-        val weekly = calculator.buildWeeklyData(events)
-        // This is the documented bug: events logged without durationMs always sum to 0
-        assertEquals(0L, weekly.last().totalMs)
-    }
-
     // --- Per-app trend data tests ---
 
     @Test
@@ -282,28 +201,6 @@ class StatsViewModelTest {
     }
 
     // --- Date-parameterized referenceDayStartMs tests ---
-
-    @Test
-    fun `buildWeeklyData with past reference day includes correct window`() {
-        val todayStart = timeTracker.startOfToday()
-        val dayMs = 24L * 60L * 60L * 1000L
-        // Reference day = yesterday
-        val yesterdayStart = todayStart - dayMs
-
-        val events = listOf(
-            // Event on yesterday
-            makeEvent(yesterdayStart + 1000, durationMs = 50000),
-            // Event 2 days ago (within yesterday's 7-day window)
-            makeEvent(yesterdayStart - dayMs + 1000, durationMs = 30000),
-            // Event on today (outside yesterday's 7-day ending window)
-            makeEvent(todayStart + 1000, durationMs = 99000),
-        )
-
-        val weekly = calculator.buildWeeklyData(events, referenceDayStartMs = yesterdayStart)
-        // Last entry should be yesterday, so today's event should NOT appear
-        assertEquals(50000L, weekly.last().totalMs)
-        assertEquals(30000L, weekly[weekly.size - 2].totalMs)
-    }
 
     @Test
     fun `buildTrendData with past reference day scopes correctly`() {
@@ -402,7 +299,6 @@ class StatsViewModelTest {
 
     private fun makeEvent(
         timestamp: Long,
-        durationMs: Long = 0L,
         wasBlocked: Boolean = false,
         userChangedMind: Boolean = false,
         packageName: String = "com.test.app"
@@ -410,7 +306,6 @@ class StatsViewModelTest {
         id = 0,
         packageName = packageName,
         timestamp = timestamp,
-        durationMs = durationMs,
         wasBlocked = wasBlocked,
         userChangedMind = userChangedMind
     )

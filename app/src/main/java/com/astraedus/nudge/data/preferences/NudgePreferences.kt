@@ -37,6 +37,7 @@ class NudgePreferences @Inject constructor(
         val STRICT_MODE_CHALLENGE_LENGTH = intPreferencesKey("strict_mode_challenge_length")
         val EMERGENCY_PASS_ENABLED = booleanPreferencesKey("emergency_pass_enabled")
         val EMERGENCY_PASS_USAGE = stringPreferencesKey("emergency_pass_usage")
+        val PIP_ESCAPE_PROMPTED = stringPreferencesKey("pip_escape_prompted")
     }
 
     override val isGlobalEnabled: Flow<Boolean> = context.dataStore.data
@@ -200,5 +201,31 @@ class NudgePreferences @Inject constructor(
                 com.astraedus.nudge.domain.emergency.EmergencyPass.recordGlobal(now)
             )
         )
+    }
+
+    /**
+     * Serialized `;`-separated set of packages we have already shown the picture-in-picture escape
+     * explainer for (issue #19). Empty string = none. Parsed via
+     * [com.astraedus.nudge.domain.pip.PipEscapeLedger.parse].
+     *
+     * The explainer is one-shot education about a platform limitation Nudge cannot fix in code, so
+     * this exists purely to stop it nagging.
+     */
+    val pipEscapePromptedPackages: Flow<String> = context.dataStore.data
+        .map { prefs -> prefs[Keys.PIP_ESCAPE_PROMPTED] ?: "" }
+
+    /**
+     * Record that the PiP escape explainer has been shown for [packageName]. Read-modify-write under
+     * a single `edit` so two apps escaping close together cannot clobber each other's entry.
+     */
+    suspend fun recordPipEscapePrompted(packageName: String) {
+        context.dataStore.edit { prefs ->
+            val current = com.astraedus.nudge.domain.pip.PipEscapeLedger.parse(
+                prefs[Keys.PIP_ESCAPE_PROMPTED] ?: ""
+            )
+            prefs[Keys.PIP_ESCAPE_PROMPTED] = com.astraedus.nudge.domain.pip.PipEscapeLedger.serialize(
+                com.astraedus.nudge.domain.pip.PipEscapeLedger.record(current, packageName)
+            )
+        }
     }
 }

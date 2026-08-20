@@ -41,6 +41,8 @@ object RuleWeakening {
      *  - autoKickAfter raised, or removed when one existed (more interactions before the kick)
      *  - autoKickAfterMinutes raised, or removed when one existed (more session time before the kick)
      *  - autoKickCooldownSeconds lowered (less time locked out after a kick)
+     *  - web enforcement softened: the mode a rule's websites block with (webBlockMode, falling
+     *    back to mode) lowered, or the domains removed entirely, when web blocking was configured
      *
      * Strengthening or unchanged on all dimensions -> false.
      */
@@ -69,7 +71,33 @@ object RuleWeakening {
         // locked out after a kick, i.e. it gets EASIER to get back in sooner.
         if (new.autoKickCooldownSeconds < old.autoKickCooldownSeconds) return true
 
+        // Web domains now enforce independently of the app-level mode (issue #21), so they are
+        // their own weakening axis: without this, Strict Mode could be sidestepped by softening
+        // (or deleting) website blocking while leaving the app-level rule untouched.
+        if (isWebEnforcementWeakened(old, new)) return true
+
         return false
+    }
+
+    /**
+     * True when [new] enforces less on the web than [old] did. Only bites when [old] actually had
+     * web blocking configured — adding domains, or having none either way, is never weakening.
+     * Removing the domains counts: it turns website enforcement off entirely.
+     */
+    private fun isWebEnforcementWeakened(old: BlockRule, new: BlockRule): Boolean {
+        val oldStrength = webStrength(old) ?: return false
+        val newStrength = webStrength(new) ?: return true
+        return newStrength < oldStrength
+    }
+
+    /**
+     * Strength of a rule's WEB enforcement, or null when it enforces nothing on the web (no
+     * domains configured). Mirrors [com.astraedus.nudge.domain.model.WebBlockMode.resolve]:
+     * `webBlockMode` wins, else the app-level mode.
+     */
+    private fun webStrength(rule: BlockRule): Int? {
+        if (rule.webDomains.isNullOrBlank()) return null
+        return modeStrength(rule.webBlockMode ?: rule.mode)
     }
 
     /**

@@ -14,7 +14,17 @@ data class ImportResult(
     val rules: List<ExportedRule>,
     val groups: List<ExportedGroup>,
     val version: Int,
-    val error: String? = null
+    val error: String? = null,
+    /**
+     * Entries (rules or groups) in the file that could not be parsed and were skipped. Every other
+     * entry still imports -- see [RuleExporter.importRules].
+     */
+    val invalidCount: Int = 0,
+    /**
+     * Human-readable reason per skipped entry, in file order ("Rule 3: ..."). Capped -- these are
+     * for display, so [invalidCount] is the authoritative total, not `invalidReasons.size`.
+     */
+    val invalidReasons: List<String> = emptyList()
 )
 
 @Singleton
@@ -22,6 +32,16 @@ class RuleExporter @Inject constructor() {
 
     companion object {
         private const val CURRENT_VERSION = 1
+
+        /** Cap on how many per-entry reasons an error message quotes, so it stays readable. */
+        private const val MAX_REPORTED_REASONS = 3
+
+        /**
+         * Cap on how many reasons are retained at all. [ImportResult.invalidCount] still counts
+         * every skip; only the explanatory strings are bounded, so a pathological file cannot make
+         * the reason list grow with its own entry count.
+         */
+        private const val MAX_COLLECTED_REASONS = 20
 
         /**
          * Accepted values for a rule's `mode` on import, derived from [BlockMode] rather than
@@ -61,7 +81,8 @@ class RuleExporter @Inject constructor() {
                 showTimeRemaining = rule.showTimeRemaining,
                 autoKickCooldownSeconds = rule.autoKickCooldownSeconds,
                 webDomains = rule.webDomains,
-                autoKickAfterMinutes = rule.autoKickAfterMinutes
+                autoKickAfterMinutes = rule.autoKickAfterMinutes,
+                webBlockMode = rule.webBlockMode
             )
         }
 
@@ -80,7 +101,15 @@ class RuleExporter @Inject constructor() {
 
     /**
      * Parses and validates a JSON string into an ImportResult.
-     * Returns an ImportResult with error field set if validation fails.
+     *
+     * Entry-level failures are ISOLATED: a rule or group that cannot be parsed is skipped and
+     * counted in [ImportResult.invalidCount], and every other entry still imports. Export/import is
+     * the app's only backup path, so one bad entry must never cost the user the whole file (the
+     * original eager `map` threw out of the loop and the catch returned an empty list -- issue #20).
+     *
+     * ENVELOPE-level failures still fail loudly via [ImportResult.error]: not JSON, a bad version,
+     * a `rules`/`groups` key that is not an array, or a file in which literally nothing was
+     * importable. "Imported 0 rules" is never reported as a success.
      */
     fun importRules(json: String): ImportResult {
         return try {
@@ -104,18 +133,36 @@ class RuleExporter @Inject constructor() {
                 )
             }
 
-            val rulesArray = root.optJSONArray("rules") ?: JSONArray()
-            val groupsArray = root.optJSONArray("groups") ?: JSONArray()
-
-            val rules = (0 until rulesArray.length()).map { i ->
-                parseRule(rulesArray.getJSONObject(i))
+            // Count every skip but retain only the first few reasons: the reason list is driven by
+            // file content, and a wrong-file pick (a big JSON of anything else) must not turn into
+            // a million strings on a 3GB device.
+            var invalidCount = 0
+            val reasons = mutableListOf<String>()
+            val onSkip: (String) -> Unit = { reason ->
+                invalidCount++
+                if (reasons.size < MAX_COLLECTED_REASONS) reasons.add(reason)
             }
 
-            val groups = (0 until groupsArray.length()).map { i ->
-                parseGroup(groupsArray.getJSONObject(i))
+            val rules = parseEach(root.arrayOrEmpty("rules"), "Rule", onSkip, ::parseRule)
+            val groups = parseEach(root.arrayOrEmpty("groups"), "Group", onSkip, ::parseGroup)
+
+            // Nothing survived. Skipping every entry is not a successful import of zero rules --
+            // report it as a failure so the user sees why instead of a silent "Imported: 0".
+            val error = if (rules.isEmpty() && groups.isEmpty() && invalidCount > 0) {
+                allInvalidMessage(invalidCount, reasons)
+            } else {
+                null
             }
 
-            ImportResult(rules = rules, groups = groups, version = version)
+            // Both lists are empty whenever `error` is set, so they need no special-casing here.
+            ImportResult(
+                rules = rules,
+                groups = groups,
+                version = version,
+                error = error,
+                invalidCount = invalidCount,
+                invalidReasons = reasons
+            )
         } catch (e: JSONException) {
             ImportResult(
                 rules = emptyList(),
@@ -158,6 +205,7 @@ class RuleExporter @Inject constructor() {
             obj.put("autoKickCooldownSeconds", rule.autoKickCooldownSeconds)
             obj.put("webDomains", rule.webDomains ?: JSONObject.NULL)
             obj.put("autoKickAfterMinutes", rule.autoKickAfterMinutes ?: JSONObject.NULL)
+            obj.put("webBlockMode", rule.webBlockMode ?: JSONObject.NULL)
             rulesArray.put(obj)
         }
         root.put("rules", rulesArray)
@@ -174,6 +222,50 @@ class RuleExporter @Inject constructor() {
         root.put("groups", groupsArray)
 
         return root.toString(2)
+    }
+
+    /**
+     * Parses every element of [array] independently, collecting a reason into [skipped] for each
+     * one that fails instead of aborting the whole array. Shared by rules and groups so the two can
+     * never drift in how tolerant they are.
+     */
+    private fun <T> parseEach(
+        array: JSONArray,
+        label: String,
+        onSkip: (String) -> Unit,
+        parse: (JSONObject) -> T
+    ): List<T> {
+        val parsed = ArrayList<T>(array.length())
+        for (i in 0 until array.length()) {
+            try {
+                parsed.add(parse(array.getJSONObject(i)))
+            } catch (e: JSONException) {
+                onSkip("$label ${i + 1}: ${e.skipReason()}")
+            } catch (e: IllegalArgumentException) {
+                onSkip("$label ${i + 1}: ${e.skipReason()}")
+            }
+        }
+        return parsed
+    }
+
+    private fun Exception.skipReason(): String =
+        message?.takeIf { it.isNotBlank() } ?: "could not be read"
+
+    private fun allInvalidMessage(invalidCount: Int, reasons: List<String>): String {
+        val shown = reasons.take(MAX_REPORTED_REASONS).joinToString("\n")
+        val extra = invalidCount - MAX_REPORTED_REASONS
+        val more = if (extra > 0) "\n...and $extra more" else ""
+        return "No valid rules or groups found. All $invalidCount entries were invalid:\n$shown$more"
+    }
+
+    /**
+     * A key that is absent or null means "none" (older exports omit `groups` entirely); a key that
+     * is present but is NOT an array means the file is not a Nudge export, which must fail loudly
+     * rather than quietly importing zero rules.
+     */
+    private fun JSONObject.arrayOrEmpty(key: String): JSONArray {
+        if (!has(key) || isNull(key)) return JSONArray()
+        return optJSONArray(key) ?: throw JSONException("\"$key\" must be an array")
     }
 
     private fun parseRule(obj: JSONObject): ExportedRule {
@@ -199,12 +291,17 @@ class RuleExporter @Inject constructor() {
             showTimeRemaining = obj.optBoolean("showTimeRemaining", false),
             autoKickCooldownSeconds = obj.optInt("autoKickCooldownSeconds", 60),
             webDomains = obj.optStringOrNull("webDomains"),
-            autoKickAfterMinutes = obj.optIntOrNull("autoKickAfterMinutes")
+            autoKickAfterMinutes = obj.optIntOrNull("autoKickAfterMinutes"),
+            // Null (absent, or written by an older Nudge) = inherit the app-level mode, which is
+            // exactly what those exports meant. An unrecognized value is tolerated rather than
+            // failing the import: WebBlockMode falls back to the app-level mode for it.
+            webBlockMode = obj.optStringOrNull("webBlockMode")
         )
     }
 
     private fun parseGroup(obj: JSONObject): ExportedGroup {
         val name = obj.getString("name")
+        require(name.isNotBlank()) { "Group name is blank" }
         val membersArr = obj.optJSONArray("members") ?: JSONArray()
         val members = (0 until membersArr.length()).map { membersArr.getString(it) }
         return ExportedGroup(name = name, members = members)

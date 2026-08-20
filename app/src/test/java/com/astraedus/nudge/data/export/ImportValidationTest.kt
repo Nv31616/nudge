@@ -55,8 +55,13 @@ class ImportValidationTest {
         assertTrue(result.error!!.contains("update"))
     }
 
+    /**
+     * The mode is the one field import validates, and an unknown one disqualifies the rule. With
+     * this file's only rule disqualified there is nothing to import, so it errors -- a mixed file
+     * instead skips just that rule ([ImportSkipInvalidTest]).
+     */
     @Test
-    fun `invalid block mode returns error`() {
+    fun `invalid block mode disqualifies the rule`() {
         val json = """
         {
             "version": 1,
@@ -77,7 +82,9 @@ class ImportValidationTest {
         """.trimIndent()
         val result = exporter.importRules(json)
         assertNotNull(result.error)
-        assertTrue(result.error!!.contains("Invalid data"))
+        assertTrue(result.error!!.contains("INVALID_MODE"))
+        assertEquals(1, result.invalidCount)
+        assertEquals(0, result.rules.size)
     }
 
     @Test

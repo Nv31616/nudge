@@ -2,6 +2,13 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.12.0] - 2026-08-20
+
+### Fixed
+- **Apps can no longer slip a video past a block by shrinking it into a floating window** ([#19](https://github.com/astraedus/nudge/issues/19), found by [@polubarev](https://github.com/polubarev)). When Nudge blocked YouTube, YouTube could drop the Short into a picture-in-picture bubble that floats above everything — including a full-screen block. Android gives no app a way to switch that off for another app, so Nudge now spots it happening and, once per app, shows you what is going on with a one-tap link to the setting that stops it (Special app access → Picture-in-picture). It won't ask twice.
+- **Your blocked count no longer inflates on its own.** A video playing in one of those floating windows looked, to Nudge, exactly like you re-opening the app — so it re-blocked and counted a block over and over while you sat there watching. Those events are now recognised for what they are, and the picture-in-picture screen itself records nothing: it is neither a block you hit nor a walk-away.
+- **Website blocking works with "Block the whole app" off** ([#21](https://github.com/astraedus/nudge/issues/21)). Websites were blocked using the app's own block mode, so a rule set to leave the app open, the setting that blocks just Shorts or Reels, quietly stopped blocking the websites too. "Block on web too" was simply greyed out to hide it. Now a rule's websites have their own block mode: leave the app open and still hard-block, delay or breathe on the site. Existing rules are untouched, and any rule that was silently blocking nothing on the web is repaired to a delay you can change in the editor.
+
 ## [1.11.0] - 2026-08-19
 
 ### Added

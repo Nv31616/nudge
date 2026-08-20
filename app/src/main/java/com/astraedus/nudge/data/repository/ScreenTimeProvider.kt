@@ -15,7 +15,8 @@ import javax.inject.Singleton
  *
  * This is the correct data source for "Screen Time" display. The internal
  * Room DB (usage_events table) only logs block/allow decisions and does NOT
- * track foreground duration — its durationMs field is always 0.
+ * track foreground duration at all — it carried an always-zero `durationMs`
+ * column until issue #22 removed it.
  *
  * Requires PACKAGE_USAGE_STATS permission (granted via Settings > Special Access > Usage Access).
  * Returns 0 gracefully when permission is missing.
