@@ -92,6 +92,36 @@ class HistoryExportTest {
         assertEquals("""weird."pkg"\name""", result.history.single().packageName)
     }
 
+    /**
+     * The history array is appended by finding the envelope's closing brace, so a `}` sitting
+     * inside a STRING value is the adversarial case for that surgery. It is safe by construction --
+     * the root's own brace is always the LAST one in the document -- and this pins it, because
+     * getting it wrong would corrupt the file rather than fail a test somewhere obvious.
+     */
+    @Test
+    fun `a closing brace inside a rule value cannot break the splice`() {
+        val json = exporter.exportRules(
+            rules = listOf(
+                BlockRule(
+                    id = 1,
+                    packageName = "com.app.with}brace",
+                    mode = "DELAY",
+                    webDomains = "weird.example.com/}"
+                )
+            ),
+            groups = emptyList(),
+            groupMembers = emptyMap(),
+            history = listOf(event(pkg = "com.app.with}brace", ts = 1000))
+        )
+
+        val result = exporter.importRules(json)
+
+        assertNull(result.error)
+        assertEquals("com.app.with}brace", result.rules.single().packageName)
+        assertEquals("weird.example.com/}", result.rules.single().webDomains)
+        assertEquals("com.app.with}brace", result.history.single().packageName)
+    }
+
     /** Nothing to export means no `history` key at all -- byte-identical to a pre-history backup. */
     @Test
     fun `an export with no history writes no history key`() {
