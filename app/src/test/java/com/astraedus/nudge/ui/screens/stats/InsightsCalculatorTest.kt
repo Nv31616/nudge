@@ -160,8 +160,10 @@ class InsightsCalculatorTest {
 
         assertEquals(10, result.hours[14].attempts)
         assertTrue(result.hours.filterIndexed { i, _ -> i != 14 }.all { it.attempts == 0 })
-        assertEquals(14, result.strongestHour)
-        // Only one hour qualifies, so there is no honest "weakest" to name.
+        // Ten blocks and zero walk-aways is volume, not a resistance pattern: naming 14:00
+        // "strongest" here is the exact contradiction device QA caught (an empty rate chart
+        // captioned "Strongest at 4pm"). This assertion used to expect 14.
+        assertNull(result.strongestHour)
         assertNull(result.weakestHour)
     }
 
@@ -359,6 +361,25 @@ class InsightsCalculatorTest {
 
         assertEquals(9, result.strongestHour)
         assertEquals(23, result.weakestHour)
+    }
+
+    @Test
+    fun `zero walk-aways yields no strongest or weakest hour, however well-sampled`() {
+        // v1.13.0 device QA: 11 blocks, 0 walk-aways rendered the clock's "no data" empty
+        // state WITH a "Strongest at 4pm" caption underneath it. An all-zero rate curve has
+        // no resistance pattern to name, no matter how many attempts back it.
+        val now = at(brisbane, 2026, 8, 20, 23, 59)
+        val events = buildList {
+            repeat(5) { add(shown(at(brisbane, 2026, 8, 20, 9, it))) }
+            repeat(6) { add(shown(at(brisbane, 2026, 8, 20, 16, it))) }
+        }
+
+        val result = calculator.willpower(events, now, brisbane, InsightsRange.THIRTY_DAYS)
+
+        assertEquals(5, result.hours[9].attempts)
+        assertEquals(6, result.hours[16].attempts)
+        assertNull(result.strongestHour)
+        assertNull(result.weakestHour)
     }
 
     @Test

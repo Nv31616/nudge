@@ -176,7 +176,7 @@ private fun WillpowerClockSection(
                     "${hour.attempts} walked away (${calculator.formatPercent(hour.rate)})"
             )
         }
-        RateBarChart(bars = bars, emptyMessage = "No data in this period")
+        RateBarChart(bars = bars, emptyMessage = "No walk-aways yet in this period")
 
         val strongest = insights.strongestHour
         val weakest = insights.weakestHour

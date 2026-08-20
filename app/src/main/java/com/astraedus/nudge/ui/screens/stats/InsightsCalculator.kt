@@ -150,7 +150,10 @@ class InsightsCalculator @Inject constructor() {
      */
     private fun extremeHours(hours: List<HourResistance>): Pair<Int?, Int?> {
         val qualifying = hours.filter { it.attempts >= MIN_HOUR_SAMPLE }
-        if (qualifying.isEmpty()) return null to null
+        // No walk-away anywhere in the range means there is no hourly resistance pattern to
+        // report — the chart renders its empty state in that case, and a "Strongest at 4pm"
+        // caption under an empty chart reads as a contradiction (found in v1.13.0 device QA).
+        if (qualifying.isEmpty() || qualifying.none { it.rate > 0f }) return null to null
 
         val strongest = qualifying.maxWith(
             compareBy<HourResistance> { it.rate }.thenBy { it.attempts }.thenByDescending { it.hour }
