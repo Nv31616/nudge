@@ -2,7 +2,7 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [1.12.0] - 2026-08-20
 
 ### Fixed
 - **Apps can no longer slip a video past a block by shrinking it into a floating window** ([#19](https://github.com/astraedus/nudge/issues/19), found by [@polubarev](https://github.com/polubarev)). When Nudge blocked YouTube, YouTube could drop the Short into a picture-in-picture bubble that floats above everything — including a full-screen block. Android gives no app a way to switch that off for another app, so Nudge now spots it happening and, once per app, shows you what is going on with a one-tap link to the setting that stops it (Special app access → Picture-in-picture). It won't ask twice.
