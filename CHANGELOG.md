@@ -2,6 +2,12 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+- **Apps can no longer slip a video past a block by shrinking it into a floating window** ([#19](https://github.com/astraedus/nudge/issues/19), found by [@polubarev](https://github.com/polubarev)). When Nudge blocked YouTube, YouTube could drop the Short into a picture-in-picture bubble that floats above everything — including a full-screen block. Android gives no app a way to switch that off for another app, so Nudge now spots it happening and, once per app, shows you what is going on with a one-tap link to the setting that stops it (Special app access → Picture-in-picture). It won't ask twice.
+- **Your blocked count no longer inflates on its own.** A video playing in one of those floating windows looked, to Nudge, exactly like you re-opening the app — so it re-blocked and counted a block over and over while you sat there watching. Those events are now recognised for what they are, and the picture-in-picture screen itself records nothing: it is neither a block you hit nor a walk-away.
+
 ## [1.11.0] - 2026-08-19
 
 ### Added

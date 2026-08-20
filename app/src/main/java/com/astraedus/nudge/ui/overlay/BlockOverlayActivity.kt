@@ -51,7 +51,6 @@ class BlockOverlayActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        NudgeAccessibilityService.isOverlayActive = true
         render(intent)
     }
 
@@ -65,7 +64,6 @@ class BlockOverlayActivity : ComponentActivity() {
     override fun onNewIntent(newIntent: Intent) {
         super.onNewIntent(newIntent)
         setIntent(newIntent)
-        NudgeAccessibilityService.isOverlayActive = true
         render(newIntent)
     }
 
@@ -81,13 +79,21 @@ class BlockOverlayActivity : ComponentActivity() {
         // there is no "no-op overlay", and showing any of the three below would gate an app the
         // user explicitly chose not to gate.
         if (mode == BlockMode.NONE) {
-            NudgeAccessibilityService.isOverlayActive = false
+            NudgeAccessibilityService.markOverlayInactive()
             finish()
             return
         }
 
         val delaySeconds = intent.getIntExtra(EXTRA_DELAY_SECONDS, 15)
         val packageName = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: ""
+
+        // Assert the overlay flag (and WHICH app it is blocking) synchronously here rather than in
+        // onCreate/onNewIntent: those run before the intent is parsed, and the service's issue-#19
+        // picture-in-picture check needs the package, not just "something is up". render() is called
+        // synchronously from both, so there is no window in which the flag is unset. Paths that
+        // launch us without pre-marking (the daily-limit HARD_BLOCK in TimeRemainingHandler) are
+        // covered here too.
+        NudgeAccessibilityService.markOverlayActive(packageName)
         val ruleName = intent.getStringExtra(EXTRA_RULE_NAME)
         val dailyTimeRemainingMs = intent.getLongExtra(EXTRA_DAILY_TIME_REMAINING_MS, -1L)
             .let { if (it < 0) null else it }
@@ -232,7 +238,7 @@ class BlockOverlayActivity : ComponentActivity() {
     override fun onStop() {
         super.onStop()
         if (!isFinishing && !isChangingConfigurations) {
-            NudgeAccessibilityService.isOverlayActive = false
+            NudgeAccessibilityService.markOverlayInactive()
             finish()
         }
     }
@@ -249,7 +255,7 @@ class BlockOverlayActivity : ComponentActivity() {
                 featureKey = intent.getStringExtra(EXTRA_FEATURE_KEY)
             )
         }
-        NudgeAccessibilityService.isOverlayActive = false
+        NudgeAccessibilityService.markOverlayInactive()
         finish()
     }
 
@@ -278,7 +284,7 @@ class BlockOverlayActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        NudgeAccessibilityService.isOverlayActive = false
+        NudgeAccessibilityService.markOverlayInactive()
     }
 
     @Deprecated("Use OnBackPressedDispatcher")
