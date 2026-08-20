@@ -2,6 +2,11 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+- **Website blocking works with "Block the whole app" off** ([#21](https://github.com/astraedus/nudge/issues/21)). Websites were blocked using the app's own block mode, so a rule set to leave the app open, the setting that blocks just Shorts or Reels, quietly stopped blocking the websites too. "Block on web too" was simply greyed out to hide it. Now a rule's websites have their own block mode: leave the app open and still hard-block, delay or breathe on the site. Existing rules are untouched, and any rule that was silently blocking nothing on the web is repaired to a delay you can change in the editor.
+
 ## [1.11.0] - 2026-08-19
 
 ### Added
