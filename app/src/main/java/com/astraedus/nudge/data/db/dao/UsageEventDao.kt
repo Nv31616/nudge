@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Query
 import com.astraedus.nudge.data.db.entity.UsageEvent
+import com.astraedus.nudge.data.db.entity.UsageEventKey
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -11,6 +12,28 @@ interface UsageEventDao {
 
     @Insert
     suspend fun insert(event: UsageEvent)
+
+    /** Batch insert for restore. Room wraps the list in ONE transaction. */
+    @Insert
+    suspend fun insertAll(events: List<UsageEvent>)
+
+    /**
+     * The whole table, oldest first, as a one-shot list -- for export. Not a `Flow`: an export is a
+     * snapshot, and observing the table would keep the rows alive after the file is written.
+     */
+    @Query("SELECT * FROM usage_events ORDER BY timestamp ASC")
+    suspend fun getAllForExport(): List<UsageEvent>
+
+    /**
+     * Dedup keys for rows in an inclusive timestamp window -- four columns, not whole rows, and
+     * bounded to the span the import file actually covers. Restoring last week's backup must not
+     * read years of history to answer a question about last week.
+     */
+    @Query(
+        "SELECT packageName, timestamp, wasBlocked, userChangedMind FROM usage_events " +
+            "WHERE timestamp >= :from AND timestamp <= :to"
+    )
+    suspend fun getKeysInRange(from: Long, to: Long): List<UsageEventKey>
 
     @Query("SELECT * FROM usage_events WHERE packageName = :pkg AND timestamp >= :since")
     fun getEventsForPackage(pkg: String, since: Long): Flow<List<UsageEvent>>

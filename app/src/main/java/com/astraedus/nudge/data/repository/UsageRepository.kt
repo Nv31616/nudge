@@ -5,6 +5,8 @@ import android.app.usage.UsageStatsManager
 import android.content.Context
 import com.astraedus.nudge.data.db.dao.UsageEventDao
 import com.astraedus.nudge.data.db.entity.UsageEvent
+import com.astraedus.nudge.data.db.entity.UsageEventKey
+import com.astraedus.nudge.data.export.HistoryMerge
 import com.astraedus.nudge.domain.engine.TimeTracker
 import com.astraedus.nudge.service.UsageProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -20,6 +22,18 @@ class UsageRepository @Inject constructor(
 ) : UsageProvider {
 
     suspend fun logEvent(event: UsageEvent) = usageEventDao.insert(event)
+
+    /** Every event, oldest first — the corpus an export carries. */
+    suspend fun getAllEventsForExport(): List<UsageEvent> = usageEventDao.getAllForExport()
+
+    /** Identities of the events already stored in an inclusive timestamp window. */
+    suspend fun getEventKeysInRange(from: Long, to: Long): List<UsageEventKey> =
+        usageEventDao.getKeysInRange(from, to)
+
+    /** Restores imported events. Chunked so one import is never a single unbounded statement. */
+    suspend fun insertEvents(events: List<UsageEvent>) {
+        events.chunked(HistoryMerge.INSERT_BATCH_SIZE).forEach { usageEventDao.insertAll(it) }
+    }
 
     /**
      * Get today's foreground usage time from queryEvents (ACTIVITY_RESUMED/PAUSED pairs).

@@ -8,7 +8,15 @@ data class NudgeExport(
     val version: Int = 1,
     val exportedAt: Long = System.currentTimeMillis(),
     val rules: List<ExportedRule>,
-    val groups: List<ExportedGroup> = emptyList()
+    val groups: List<ExportedGroup> = emptyList(),
+    /**
+     * Usage history -- one entry per `usage_events` row. OPTIONAL, and deliberately added at
+     * envelope version 1 rather than as a version 2: every shipped version of the importer reads
+     * the envelope by KNOWN KEY ONLY (`version`, `rules`, `groups`), so an older Nudge simply
+     * ignores this array, whereas a version bump would make it reject the entire file as "newer
+     * than supported" and cost the user their rules as well as their history.
+     */
+    val history: List<ExportedHistoryEvent> = emptyList()
 )
 
 data class ExportedRule(
@@ -36,4 +44,23 @@ data class ExportedRule(
 data class ExportedGroup(
     val name: String,
     val members: List<String> // package names
+)
+
+/**
+ * One row of block/walk-away history -- the exact shape of a `UsageEvent`, minus its local row id.
+ *
+ * This is what makes the dashboard tiles and the insight pages survive a device move: they are
+ * computed from `usage_events`, so without these rows a restored backup shows a user with years of
+ * rules and a lifetime "Blocked" count of zero.
+ *
+ * Screen time is NOT here and cannot be: it comes from `UsageStatsManager`, which is OS-owned and
+ * re-derives itself per device. Only Nudge's own decisions transfer.
+ */
+data class ExportedHistoryEvent(
+    val packageName: String,
+    /** Epoch millis, as stored. */
+    val timestamp: Long,
+    val wasBlocked: Boolean,
+    val blockMode: String?,
+    val userChangedMind: Boolean
 )

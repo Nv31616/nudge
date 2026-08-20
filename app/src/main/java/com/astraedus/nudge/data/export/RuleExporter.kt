@@ -3,6 +3,7 @@ package com.astraedus.nudge.data.export
 import com.astraedus.nudge.data.db.entity.AppGroup
 import com.astraedus.nudge.data.db.entity.AppGroupMember
 import com.astraedus.nudge.data.db.entity.BlockRule
+import com.astraedus.nudge.data.db.entity.UsageEvent
 import com.astraedus.nudge.domain.model.BlockMode
 import org.json.JSONArray
 import org.json.JSONException
@@ -24,7 +25,21 @@ data class ImportResult(
      * Human-readable reason per skipped entry, in file order ("Rule 3: ..."). Capped -- these are
      * for display, so [invalidCount] is the authoritative total, not `invalidReasons.size`.
      */
-    val invalidReasons: List<String> = emptyList()
+    val invalidReasons: List<String> = emptyList(),
+    /**
+     * Usage history carried by the file. Empty for a rules-only export (every file written before
+     * this existed, and every file written by an older Nudge).
+     */
+    val history: List<ExportedHistoryEvent> = emptyList(),
+    /**
+     * History entries that could not be read. Counted SEPARATELY from [invalidCount] because they
+     * are a different kind of loss to the user: a dropped rule stops protecting them, a dropped
+     * history row only dents a statistic. Merging the two would let a corrupt history array read as
+     * "20 of your rules could not be imported".
+     */
+    val invalidHistoryCount: Int = 0,
+    /** Reason per skipped history entry ("History event 3: ..."), capped like [invalidReasons]. */
+    val invalidHistoryReasons: List<String> = emptyList()
 )
 
 @Singleton
@@ -51,15 +66,24 @@ class RuleExporter @Inject constructor() {
          * lost, on the app's only backup mechanism. Deriving it means that class of bug cannot recur.
          */
         private val VALID_MODES: Set<String> = BlockMode.entries.mapTo(mutableSetOf()) { it.name }
+
+        /** Rough per-entry size, used only to pre-size the output buffer. */
+        private const val ESTIMATED_HISTORY_ENTRY_CHARS = 120
     }
 
     /**
-     * Exports rules and groups to a pretty-printed JSON string.
+     * Exports rules, groups and usage [history] to a JSON string.
+     *
+     * Rules and groups stay pretty-printed (a backup a human can read and hand-edit was the point);
+     * the history array is written COMPACTLY, one object per line-less entry, because it is machine
+     * data whose row count is unbounded -- pretty-printing tens of thousands of events would inflate
+     * the file several-fold for nobody's benefit. See [serializeToJson].
      */
     fun exportRules(
         rules: List<BlockRule>,
         groups: List<AppGroup>,
-        groupMembers: Map<Long, List<AppGroupMember>>
+        groupMembers: Map<Long, List<AppGroupMember>>,
+        history: List<UsageEvent> = emptyList()
     ): String {
         val groupIdToName = groups.associateBy({ it.id }, { it.name })
 
@@ -93,7 +117,8 @@ class RuleExporter @Inject constructor() {
 
         val export = NudgeExport(
             rules = exportedRules,
-            groups = exportedGroups
+            groups = exportedGroups,
+            history = history.map(HistoryMerge::toExported)
         )
 
         return serializeToJson(export)
@@ -108,8 +133,13 @@ class RuleExporter @Inject constructor() {
      * original eager `map` threw out of the loop and the catch returned an empty list -- issue #20).
      *
      * ENVELOPE-level failures still fail loudly via [ImportResult.error]: not JSON, a bad version,
-     * a `rules`/`groups` key that is not an array, or a file in which literally nothing was
-     * importable. "Imported 0 rules" is never reported as a success.
+     * a `rules`/`groups`/`history` key that is present but is not an array, or a file in which
+     * literally nothing was importable. "Imported 0 rules" is never reported as a success.
+     *
+     * UNKNOWN top-level keys are ignored, and always have been -- only `version`, `rules`, `groups`
+     * and now `history` are read by name. That is precisely why history could be added at envelope
+     * version 1: an older Nudge skips it, where a version bump would have made it reject the file
+     * outright and lose the user their rules too.
      */
     fun importRules(json: String): ImportResult {
         return try {
@@ -143,25 +173,46 @@ class RuleExporter @Inject constructor() {
                 if (reasons.size < MAX_COLLECTED_REASONS) reasons.add(reason)
             }
 
+            // History skips are tallied on their own counter: losing a rule and losing a statistic
+            // are not the same event, and the UI reports them as separate lines.
+            var invalidHistoryCount = 0
+            val historyReasons = mutableListOf<String>()
+            val onHistorySkip: (String) -> Unit = { reason ->
+                invalidHistoryCount++
+                if (historyReasons.size < MAX_COLLECTED_REASONS) historyReasons.add(reason)
+            }
+
             val rules = parseEach(root.arrayOrEmpty("rules"), "Rule", onSkip, ::parseRule)
             val groups = parseEach(root.arrayOrEmpty("groups"), "Group", onSkip, ::parseGroup)
+            val history = parseEach(
+                root.arrayOrEmpty("history"),
+                "History event",
+                onHistorySkip,
+                ::parseHistoryEvent
+            )
 
             // Nothing survived. Skipping every entry is not a successful import of zero rules --
             // report it as a failure so the user sees why instead of a silent "Imported: 0".
-            val error = if (rules.isEmpty() && groups.isEmpty() && invalidCount > 0) {
-                allInvalidMessage(invalidCount, reasons)
+            // History counts as something surviving: a file whose rules are all unreadable but
+            // whose history restores cleanly still did something for the user.
+            val nothingImportable = rules.isEmpty() && groups.isEmpty() && history.isEmpty()
+            val error = if (nothingImportable && invalidCount + invalidHistoryCount > 0) {
+                allInvalidMessage(invalidCount + invalidHistoryCount, reasons + historyReasons)
             } else {
                 null
             }
 
-            // Both lists are empty whenever `error` is set, so they need no special-casing here.
+            // All three lists are empty whenever `error` is set, so they need no special-casing.
             ImportResult(
                 rules = rules,
                 groups = groups,
                 version = version,
                 error = error,
                 invalidCount = invalidCount,
-                invalidReasons = reasons
+                invalidReasons = reasons,
+                history = history,
+                invalidHistoryCount = invalidHistoryCount,
+                invalidHistoryReasons = historyReasons
             )
         } catch (e: JSONException) {
             ImportResult(
@@ -221,7 +272,58 @@ class RuleExporter @Inject constructor() {
         }
         root.put("groups", groupsArray)
 
-        return root.toString(2)
+        return spliceHistory(root.toString(2), export.history)
+    }
+
+    /**
+     * Appends the compact `history` array as the last member of an already pretty-printed envelope.
+     *
+     * org.json pretty-prints a whole document or none of it, and history must not be pretty-printed:
+     * it is machine data with an unbounded row count (retention is not enforced anywhere), so four
+     * lines and ~30 bytes of indentation per event would multiply a heavy user's backup several
+     * times over. Rules and groups stay readable; history is one dense line.
+     *
+     * Splicing by the closing brace is index-of-'}' arithmetic rather than string parsing, and is
+     * independent of member ORDER -- which matters, because Android's org.json preserves insertion
+     * order while the desktop implementation the unit tests run against does not. The round-trip
+     * tests are what prove the result is valid JSON.
+     */
+    private fun spliceHistory(pretty: String, history: List<ExportedHistoryEvent>): String {
+        if (history.isEmpty()) return pretty
+        val close = pretty.lastIndexOf('}')
+        if (close < 0) return pretty // not an object; unreachable for an envelope we just built
+
+        val body = pretty.substring(0, close).trimEnd()
+        val separator = if (body.endsWith("{")) "" else ","
+        return buildString(body.length + history.size * ESTIMATED_HISTORY_ENTRY_CHARS + 32) {
+            append(body)
+            append(separator)
+            append("\n  \"history\": ")
+            appendHistoryArray(history)
+            append("\n}")
+        }
+    }
+
+    /**
+     * Writes `[{...},{...}]` straight into [this] instead of building a `JSONArray` of
+     * `JSONObject`s first. One buffer, no intermediate object graph -- the difference between a
+     * 50k-event export being a few MB of text and being a few MB of text plus 50k live objects on
+     * a 3GB device. Every string still goes through [JSONObject.quote], so escaping is not
+     * hand-rolled.
+     */
+    private fun StringBuilder.appendHistoryArray(history: List<ExportedHistoryEvent>) {
+        append('[')
+        history.forEachIndexed { index, event ->
+            if (index > 0) append(',')
+            append("{\"packageName\":").append(JSONObject.quote(event.packageName))
+            append(",\"timestamp\":").append(event.timestamp)
+            append(",\"wasBlocked\":").append(event.wasBlocked)
+            append(",\"blockMode\":")
+            append(event.blockMode?.let { JSONObject.quote(it) } ?: "null")
+            append(",\"userChangedMind\":").append(event.userChangedMind)
+            append('}')
+        }
+        append(']')
     }
 
     /**
@@ -299,6 +401,32 @@ class RuleExporter @Inject constructor() {
         )
     }
 
+    /**
+     * Parses one history row. Anything that fails here is skipped and counted -- one corrupt event
+     * out of forty thousand must never cost the user the rules in the same file.
+     *
+     * Type checks are EXACT (`opt(key) as? T`) rather than org.json's coercing `getString` /
+     * `optBoolean`, for two reasons. Android's org.json coerces where the desktop implementation
+     * the unit tests run against throws, so a coercing read would mean the tests and the device
+     * disagree about which entries are valid. And a `"wasBlocked": "yes"` quietly coerced to
+     * `false` would not be a skipped row, it would be a silently WRONG row -- history feeds the
+     * stat tiles, so mis-reading one is worse than dropping it.
+     */
+    private fun parseHistoryEvent(obj: JSONObject): ExportedHistoryEvent {
+        val packageName = obj.requiredString("packageName")
+        require(packageName.isNotBlank()) { "Package name is blank" }
+        val timestamp = obj.requiredLong("timestamp")
+        require(timestamp > 0L) { "Timestamp is not a positive epoch-millisecond value" }
+
+        return ExportedHistoryEvent(
+            packageName = packageName,
+            timestamp = timestamp,
+            wasBlocked = obj.strictBoolean("wasBlocked"),
+            blockMode = obj.strictStringOrNull("blockMode"),
+            userChangedMind = obj.strictBoolean("userChangedMind")
+        )
+    }
+
     private fun parseGroup(obj: JSONObject): ExportedGroup {
         val name = obj.getString("name")
         require(name.isNotBlank()) { "Group name is blank" }
@@ -321,5 +449,24 @@ class RuleExporter @Inject constructor() {
     private fun JSONObject.optIntOrNull(key: String): Int? {
         if (!has(key) || isNull(key)) return null
         return getInt(key)
+    }
+
+    // --- Exact-type readers, used by the history parser (see [parseHistoryEvent]) ---
+
+    private fun JSONObject.requiredString(key: String): String =
+        opt(key) as? String ?: throw JSONException("\"$key\" is missing or is not text")
+
+    private fun JSONObject.requiredLong(key: String): Long =
+        (opt(key) as? Number)?.toLong()
+            ?: throw JSONException("\"$key\" is missing or is not a number")
+
+    private fun JSONObject.strictBoolean(key: String, default: Boolean = false): Boolean {
+        if (!has(key) || isNull(key)) return default
+        return opt(key) as? Boolean ?: throw JSONException("\"$key\" is not true or false")
+    }
+
+    private fun JSONObject.strictStringOrNull(key: String): String? {
+        if (!has(key) || isNull(key)) return null
+        return opt(key) as? String ?: throw JSONException("\"$key\" is not text")
     }
 }
