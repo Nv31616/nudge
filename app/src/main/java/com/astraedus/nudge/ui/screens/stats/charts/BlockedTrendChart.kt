@@ -14,6 +14,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -74,6 +76,10 @@ fun BlockedTrendChart(
 
     val maxCount = days.maxOf { maxOf(it.blockedCount, it.walkedAwayCount) }.coerceAtLeast(1)
     val activeIndex = selectedIndex?.takeIf { it in days.indices }
+    // See WeeklyBarChart: keying on the callback would rebuild the gesture detector every
+    // recomposition, because a method reference is a fresh object each time.
+    val barCount = days.size
+    val currentOnSelect by rememberUpdatedState(onSelectDay)
 
     Column(modifier = modifier.fillMaxWidth()) {
         Canvas(
@@ -86,15 +92,15 @@ fun BlockedTrendChart(
                     }
                 }
                 .then(
-                    if (onSelectDay == null) Modifier else Modifier.pointerInput(days, onSelectDay) {
+                    if (onSelectDay == null) Modifier else Modifier.pointerInput(barCount) {
                         detectTapGestures { offset ->
                             val index = ChartGeometry.barIndexAt(
                                 x = offset.x,
                                 totalWidth = size.width.toFloat(),
-                                barCount = days.size,
+                                barCount = barCount,
                                 spacing = BAR_SPACING.toPx()
                             )
-                            if (index >= 0) onSelectDay(index)
+                            if (index >= 0) currentOnSelect?.invoke(index)
                         }
                     }
                 )

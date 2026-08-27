@@ -15,6 +15,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -78,6 +80,12 @@ fun WeeklyBarChart(
 
     val maxMs = days.maxOf { it.totalMs }.coerceAtLeast(1L)
     val activeIndex = selectedIndex?.takeIf { it in days.indices }
+    // `viewModel::selectDay` is a fresh object on every recomposition, so keying the gesture
+    // detector on the callback would tear it down and rebuild it each frame the state changes
+    // — including mid-tap. Key on the only thing the hit-test actually reads (the bar count)
+    // and route through the latest callback.
+    val barCount = days.size
+    val currentOnSelect by rememberUpdatedState(onSelectDay)
 
     Column(modifier = modifier.fillMaxWidth()) {
         Canvas(
@@ -90,15 +98,15 @@ fun WeeklyBarChart(
                     }
                 }
                 .then(
-                    if (onSelectDay == null) Modifier else Modifier.pointerInput(days, onSelectDay) {
+                    if (onSelectDay == null) Modifier else Modifier.pointerInput(barCount) {
                         detectTapGestures { offset ->
                             val index = ChartGeometry.barIndexAt(
                                 x = offset.x,
                                 totalWidth = size.width.toFloat(),
-                                barCount = days.size,
+                                barCount = barCount,
                                 spacing = BAR_SPACING.toPx()
                             )
-                            if (index >= 0) onSelectDay(index)
+                            if (index >= 0) currentOnSelect?.invoke(index)
                         }
                     }
                 )

@@ -410,7 +410,31 @@ Fix for [#20](https://github.com/astraedus/nudge/issues/20). `importRules` mappe
 - `ui/screens/stats/charts/BlockedTrendChart.kt` — dual chart: bars (blocked) + line with dots (walked away)
 - `ui/screens/stats/charts/HourlyHeatmap.kt` — 24-cell row, color intensity from surfaceVariant to primary
 - `ui/screens/stats/charts/StreakCounter.kt` — flame icon + streak count + "X days streak" label
+- `ui/screens/stats/charts/ChartGeometry.kt` — the ONE bar-layout/hit-test arithmetic (`barWidth`/`barLeft`/`barIndexAt`), pure + unit-tested. It used to be copy-pasted into each chart's `detectTapGestures` **and** separately into its `Canvas` draw block, so a chart could hit-test against a layout it was not drawing. Label rows must use `Arrangement.spacedBy(BAR_SPACING)` + `weight(1f)` cells for the same reason — `SpaceBetween` gives cells of `width/count` against bars of `(width − totalSpacing)/count`, and the two drift apart across the row.
 - All charts use Material 3 colorScheme exclusively, handle empty states, no external dependencies.
+
+### Day selection is CONTROLLED — the chart and the numbers are one state
+
+Reported as *"I click a different day in weekly trends, it shows as selected, but it doesn't swap the numbers to that day."* `WeeklyBarChart` and `BlockedTrendChart` each owned a private `var selectedIndex by remember { mutableStateOf<Int?>(null) }`; tapping a bar dimmed its neighbours and printed a tooltip and did **nothing else**, while the screen's real day lived in the ViewModel and moved only via the date arrows. Two sources of truth for one question, and the louder one was inert.
+
+- **`ui/screens/stats/StatsDaySelection.kt`** — pure `java.time` (no Android, no Compose state), the single answer to "which day am I looking at". Two fields, one invariant: `selected` always lies inside the 7-day window ending at `weekEnd`, and `selectedIndex` is where it falls among the bars.
+  - **Tapping a bar moves `selected` only** — the window stays put, so bars never slide out from under the finger. **Arrows** move `selected` and slide the window by the *minimum* needed to keep it visible. `nextDay` is capped at today; `selectIndex` clamps both the index and a future day; `jumpToToday` resets both fields.
+  - The streak is anchored on `weekEnd`, **not** `selected`: a streak is a "how am I doing right now" number and scrubbing back to inspect a Tuesday must not rewrite it.
+  - `StatsDateLabels` (same file) owns all date wording — `day()` ("Today"/"Yesterday"/"Thu, Aug 21") and `range()` ("Last 7 days", or explicit dates once scrolled back) — so a day is never called "Today" in one place and printed as a date in another. `StatsViewModel.formatDateLabel` is retained as a thin delegate to `StatsDateLabels.full`.
+- **The charts take `selectedIndex` + `onSelectDay` and own no selection state.** `onSelectDay = null` means "read-only": **no `pointerInput` is installed at all**, so taps fall through to a parent card. That is exactly how the home dashboard embeds them.
+- **`DayNavigationHeader`** (in `StatsScreen.kt`, shared with `AppDetailScreen`) carries the day in words + which window the charts below are drawing + a "Back to today" chip that renders **only** when it can do something (its presence IS the "you are not on today" signal). The selected bar draws solid with a bold label and a marker dot.
+- The selected day's Blocked / Walked-away counts sit directly under the trend chart — that pair of numbers is literally what the report was about, so they are rendered next to the chart rather than a scroll away.
+- **ViewModel flow shape** (`StatsViewModel`, `AppDetailViewModel`): the events query and the weekly screen-time series key on `weekEnd` (`map { }.distinctUntilChanged().flatMapLatest { }`), the day series keys on `selected`. Tapping between bars therefore re-slices a list already in memory instead of re-subscribing to Room.
+- **`StatsViewModel.Companion.polled(isLive) { … }`** is the shared UsageStatsManager poller (`AppDetailViewModel` imports it). It runs on **`Dispatchers.IO`** — `getDailyScreenTimesForWeek` is seven binder round-trips and this feeds `stateIn(viewModelScope)`, i.e. the main thread — and a window that has **already ended emits once and completes** rather than re-reading seven identical queries every 30 s forever.
+- Tests: `StatsDaySelectionTest` (18 — every transition, window sliding both directions, the today cap, index round-trip, out-of-range clamping, the "selected is always inside the window it draws" invariant over interleaved taps and arrows, label rules), `ChartGeometryTest` (8, incl. the 24-bar dense case).
+
+### Home dashboard charts
+
+`ui/screens/home/HomeChartsBuilder.kt` (pure, Hilt-injected, `HomeChartsBuilderTest` 9 cases) turns the weekly screen-time totals + the week's `usage_events` into the two mini charts on `HomeScreen`'s "Last 7 days" card (screen-time bars; blocks-vs-walk-aways trend). It delegates to `StatsCalculator`, so home and the stats screen can never bucket a day differently. Both charts are read-only (`onSelectDay = null`) and the whole card opens Usage Stats — the home screen has nowhere to display a day selection.
+
+- Cost: one extra windowed Room flow + one extra UsageStats read folded into the **existing** 30 s poll, and the poll moved to `Dispatchers.IO` (it was doing binder reads on the main thread).
+- **`HomeViewModel.dayStartFlow`**: `todayStart` used to be a `val` computed in the constructor, so a phone left on the home screen over midnight kept counting yesterday's events under a heading that said "Today" — the same "label and numbers disagree" defect as the chart bug. It is now re-derived on the poll tick with `distinctUntilChanged`, so the downstream Room queries re-subscribe once a day, not every 30 s.
+- The "Screen Time" tile was inert once usage permission was granted (the one tile showing a number the stats screen exists to explain). It now opens Usage Stats.
 
 ### Insight pages (v1.12.0) — Willpower + Interventions, reached from the home tiles
 
