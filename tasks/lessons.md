@@ -59,3 +59,18 @@ Two traps this walked into, worth pre-empting next time:
 - **A fresh install can silently restore an old cloud backup** (`allowBackup=true`), which would fake a passing restore test. Always confirm the tiles read 0 BEFORE importing.
 - **Only ONE agent may drive the device.** Running a device-tester agent and driving ADB from the orchestrator at the same time produced phantom symptoms on both sides (a rule toggle "flipping by itself", back presses "not working", the file picker "opening on its own") and cost a good ten minutes of misdiagnosis. Hand the device over explicitly, and wait for the acknowledgement before touching it.
 - A11y-service state is not restored by finishing onboarding: after any uninstall/reinstall, re-enable it explicitly (`astra-adb accessibility-enable dev.astraedus.nudge/com.astraedus.nudge.service.NudgeAccessibilityService`) and check `dumpsys accessibility` shows it under **Bound services**, not just Enabled, and remember the home-screen MASTER TOGGLE is a second, independent switch. A fresh install with the master toggle off blocks nothing, which looks exactly like a broken build.
+
+## A Compose chart that owns its own selection is a bug factory (2026-08-27)
+
+Reported by Anti: *"in the weekly trends i can click on different days, but then it doesn't swap the numbers to that day??? but it indicates that i've selected that day."*
+
+`WeeklyBarChart` and `BlockedTrendChart` each held `var selectedIndex by remember { mutableStateOf<Int?>(null) }`. A tap dimmed the neighbouring bars and printed a tooltip. That was the entire effect, the screen's real day lived in `StatsViewModel`, moved only by the date arrows. **Two sources of truth for one question, and the loudest one was inert.** It compiled, it animated, it looked designed, and every number under it was wrong for the day the user had just picked.
+
+**Rule: a chart may own selection state ONLY when its selection has no consequence outside itself.** A readout of the tapped bar's own value with nothing to drill into (`HourlyHeatmap`, `RateBarChart` on the insight pages) is legitimate. The moment anything else on the screen is scoped by that selection, the state must be hoisted, the chart takes `selectedIndex` + `onSelectDay` and holds nothing. Pinned by `ChartSelectionContractTest` (source-level, because Compose UI is not JVM-testable here).
+
+Three things this dragged out of the same drawer, all worth checking for by name:
+- **State captured in a ViewModel constructor goes stale.** `HomeViewModel` computed `todayStart` once at construction, so a phone left open past midnight counted yesterday's rows under a heading saying "Today". Anything day-scoped must re-derive its boundary from a tick, not an initializer.
+- **The same number worded two ways on two screens.** Stats guarded `ms < 60_000` and printed "< 1m" for a day with ZERO usage; App Detail guarded `ms in 1 until 60_000` and printed "0s". Formatting rules for a shared quantity belong in one function.
+- **Layout arithmetic copy-pasted between the hit-test and the draw block.** Each chart computed bar widths twice, so a chart could hit-test against a layout it was not drawing, and label rows using `SpaceBetween` (cells of `width/count`) drifted off bars of `(width - totalSpacing)/count`. One `ChartGeometry`, unit-tested.
+
+Also: keying `Modifier.pointerInput(days, onSelectDay)` on a `viewModel::method` reference rebuilds the gesture detector on **every** recomposition, a method reference is a fresh object each time. Key on what the hit-test actually reads (the bar count) and reach the callback through `rememberUpdatedState`.
