@@ -6,6 +6,8 @@ import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.os.Process
 import com.astraedus.nudge.domain.engine.TimeTracker
+import com.astraedus.nudge.domain.usage.DailyUsageAccumulator
+import com.astraedus.nudge.domain.usage.WeeklyUsage
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -50,23 +52,12 @@ class ScreenTimeProvider @Inject constructor(
     }
 
     /**
-     * Get per-app foreground time for an arbitrary time range using event-based calculation.
-     * Uses queryEvents (ACTIVITY_RESUMED/PAUSED pairs) which is accurate in real-time,
-     * unlike queryUsageStats(INTERVAL_DAILY) which returns stale pre-aggregated buckets
-     * on Android 12+.
-     *
-     * @param dayStartMs start of the range (inclusive), epoch millis
-     * @param dayEndMs end of the range (exclusive), epoch millis
-     */
-    fun getPerAppScreenTime(dayStartMs: Long, dayEndMs: Long): Map<String, Long> =
-        getPerAppSessionStats(dayStartMs, dayEndMs)
-            .mapValues { it.value.totalMs }
-            .filter { it.value > 0L }
-
-    /**
      * Per-app foreground time AND the number of foreground sessions that produced it, for
-     * an arbitrary range. This is the primitive [getPerAppScreenTime] is built on — one
-     * `queryEvents` pass, one place that pairs RESUMED with PAUSED.
+     * an arbitrary range — one `queryEvents` pass, one place that pairs RESUMED with PAUSED.
+     *
+     * This is a RANGE primitive, not a day one. Day-scoped and week-scoped totals all come from
+     * [getWeeklyUsage] instead, so the bars and the drill-down under them can never be two
+     * different computations of the same calendar day (they were, and they disagreed).
      *
      * The session count is what makes an *average session length* computable
      * (`totalMs / sessionCount`), which the Willpower screen uses to estimate how much
@@ -121,48 +112,66 @@ class ScreenTimeProvider @Inject constructor(
         }
     }
 
-    /** Convenience: get per-app foreground time for today. */
-    fun getPerAppScreenTimeToday(): Map<String, Long> {
-        val todayStart = timeTracker.startOfToday()
-        val now = System.currentTimeMillis()
-        return getPerAppScreenTime(todayStart, now)
-    }
-
-    /** Get total screen time for an arbitrary range in milliseconds. */
-    fun getTotalScreenTime(dayStartMs: Long, dayEndMs: Long): Long {
-        return getPerAppScreenTime(dayStartMs, dayEndMs).values.sum()
-    }
-
-    /** Convenience: get total screen time for today in milliseconds. */
-    fun getTotalScreenTimeToday(): Long {
-        return getPerAppScreenTimeToday().values.sum()
-    }
-
     /**
-     * Get daily screen time totals for 7 days ending at [lastDayStartMs].
-     * Returns a list of 7 entries, index 0 = 6 days before lastDay, index 6 = lastDay.
+     * Per-day, per-app foreground time for the [WEEK_DAYS]-day window ending at [lastDayStartMs].
+     *
+     * **The one source of truth for every day-scoped screen-time number in the app** — the weekly
+     * bars, the day drill-down's hero total, and its per-app list all read this single value.
+     *
+     * It replaced a `queryUsageStats(INTERVAL_DAILY)` series that ran beside the drill-down's
+     * event-based computation. Those pre-aggregated buckets are stale and midnight-misaligned on
+     * Android 12+ (see [getPerAppSessionStats]), so the two could flatly contradict each other:
+     * a Wednesday bar rendered tall and dark while drilling into that Wednesday showed "0s" and
+     * "No usage recorded". Both are now the same numbers, not merely two computations expected
+     * to agree.
+     *
+     * **One pass, not seven.** A single `queryEvents` over the whole window feeds
+     * [DailyUsageAccumulator], which splits each RESUMED->PAUSED span across the days it covers.
+     * Seven per-day queries would cost seven binder round-trips on every 30 s Home/Stats poll on
+     * a 3 GB Pixel 3, and could not see a session crossing midnight at all — each half would be
+     * an unpaired event in its own day's query and would be dropped from both.
+     *
+     * Day boundaries come from `TimeTracker.startOfDayDaysBefore` (calendar arithmetic), so they
+     * are true local midnights either side of a DST transition.
+     *
+     * Returns a zeroed window (right shape, no data) without permission, on a read failure, or
+     * for a window that lies entirely in the future.
      *
      * @param lastDayStartMs start-of-day epoch millis for the last day of the window (default: today)
      */
-    fun getDailyScreenTimesForWeek(lastDayStartMs: Long = timeTracker.startOfToday()): List<Long> {
-        return try {
-            val usm = usageStatsManager ?: return List(7) { 0L }
-            val now = System.currentTimeMillis()
-            val dayMs = 24L * 60L * 60L * 1000L
+    fun getWeeklyUsage(lastDayStartMs: Long = timeTracker.startOfToday()): WeeklyUsage {
+        val dayStarts = (WEEK_DAYS - 1 downTo 0).map { daysAgo ->
+            timeTracker.startOfDayDaysBefore(lastDayStartMs, daysAgo)
+        }
+        // A negative "days before" walks forward: the exclusive end of the window is the start of
+        // the day AFTER the last one. Calendar arithmetic again, not `+ DAY_MS`.
+        val windowEndMs = timeTracker.startOfDayDaysBefore(lastDayStartMs, -1)
+        val windowStartMs = dayStarts.first()
 
-            (6 downTo 0).map { daysAgo ->
-                val dayStart = lastDayStartMs - daysAgo * dayMs
-                val dayEnd = if (dayStart + dayMs > now) now else dayStart + dayMs
-                if (dayStart >= now) return@map 0L
-                val stats = usm.queryUsageStats(
-                    UsageStatsManager.INTERVAL_DAILY,
-                    dayStart,
-                    dayEnd
-                ) ?: emptyList()
-                stats.sumOf { it.totalTimeInForeground }
+        return try {
+            val usm = usageStatsManager ?: return WeeklyUsage.empty(dayStarts)
+            val now = System.currentTimeMillis()
+            val effectiveEnd = windowEndMs.coerceAtMost(now)
+            if (windowStartMs >= effectiveEnd) return WeeklyUsage.empty(dayStarts)
+
+            val events = usm.queryEvents(windowStartMs, effectiveEnd)
+                ?: return WeeklyUsage.empty(dayStarts)
+            val event = UsageEvents.Event()
+            val accumulator = DailyUsageAccumulator(dayStarts + windowEndMs)
+
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                when (event.eventType) {
+                    UsageEvents.Event.ACTIVITY_RESUMED ->
+                        accumulator.onResumed(event.packageName, event.timeStamp)
+                    UsageEvents.Event.ACTIVITY_PAUSED ->
+                        accumulator.onPaused(event.packageName, event.timeStamp)
+                }
             }
+
+            WeeklyUsage(dayStarts, accumulator.finish(windowEndMs = windowEndMs, nowMs = now))
         } catch (_: SecurityException) {
-            List(7) { 0L }
+            WeeklyUsage.empty(dayStarts)
         }
     }
 
@@ -220,36 +229,6 @@ class ScreenTimeProvider @Inject constructor(
         val todayStart = timeTracker.startOfToday()
         val now = System.currentTimeMillis()
         return getHourlyScreenTime(todayStart, now)
-    }
-
-    /**
-     * Get daily screen time totals for a specific app over 7 days ending at [lastDayStartMs].
-     * Returns a list of 7 entries, index 0 = 6 days before lastDay, index 6 = lastDay.
-     *
-     * @param packageName the app's package name
-     * @param lastDayStartMs start-of-day epoch millis for the last day of the window (default: today)
-     */
-    fun getPerAppDailyScreenTimesForWeek(packageName: String, lastDayStartMs: Long = timeTracker.startOfToday()): List<Long> {
-        return try {
-            val usm = usageStatsManager ?: return List(7) { 0L }
-            val now = System.currentTimeMillis()
-            val dayMs = 24L * 60L * 60L * 1000L
-
-            (6 downTo 0).map { daysAgo ->
-                val dayStart = lastDayStartMs - daysAgo * dayMs
-                val dayEnd = if (dayStart + dayMs > now) now else dayStart + dayMs
-                if (dayStart >= now) return@map 0L
-                val stats = usm.queryUsageStats(
-                    UsageStatsManager.INTERVAL_DAILY,
-                    dayStart,
-                    dayEnd
-                ) ?: emptyList()
-                stats.filter { it.packageName == packageName }
-                    .sumOf { it.totalTimeInForeground }
-            }
-        } catch (_: SecurityException) {
-            List(7) { 0L }
-        }
     }
 
     /**
@@ -333,5 +312,13 @@ class ScreenTimeProvider @Inject constructor(
                 hourly[hour] += overlapEnd - overlapStart
             }
         }
+    }
+
+    companion object {
+        /**
+         * Days in a weekly window. Must match `StatsDaySelection.WINDOW_DAYS` — the screens index
+         * into [WeeklyUsage] by the bar the user tapped. Pinned by `WeeklyUsageTest`.
+         */
+        const val WEEK_DAYS = 7
     }
 }

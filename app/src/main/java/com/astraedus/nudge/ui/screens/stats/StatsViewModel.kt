@@ -8,6 +8,7 @@ import com.astraedus.nudge.data.repository.InstalledAppsRepository
 import com.astraedus.nudge.data.repository.ScreenTimeProvider
 import com.astraedus.nudge.data.repository.UsageRepository
 import com.astraedus.nudge.domain.engine.TimeTracker
+import com.astraedus.nudge.domain.usage.WeeklyUsage
 import com.astraedus.nudge.ui.screens.stats.charts.DayData
 import com.astraedus.nudge.ui.screens.stats.charts.TrendDay
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -112,18 +113,32 @@ class StatsViewModel @Inject constructor(
             usageRepository.getEventsSince(windowStart.toEpochMs())
         }
 
-    /** 7 daily totals for the bars. Only re-read when the window moves. */
-    private val weeklyScreenTimeFlow = _selection
+    /**
+     * Screen time for the whole displayed window, per day AND per app — the bars *and* the
+     * selected day's numbers, out of one `queryEvents` pass.
+     *
+     * The bars used to come from `getDailyScreenTimesForWeek` (pre-aggregated
+     * `queryUsageStats(INTERVAL_DAILY)` buckets) while the drill-down below them computed its own
+     * total from live events. A tall, dark Wednesday bar over a drill-down reading "0s" is what
+     * that bought. One value now answers both questions, so they cannot disagree.
+     *
+     * Only re-read when the WINDOW moves; tapping between bars re-slices what is already in memory.
+     */
+    private val weeklyUsageFlow = _selection
         .map { it.weekEnd }
         .distinctUntilChanged()
         .flatMapLatest { weekEnd ->
             polled(isLive = weekEnd == LocalDate.now()) {
-                screenTimeProvider.getDailyScreenTimesForWeek(weekEnd.toEpochMs())
+                screenTimeProvider.getWeeklyUsage(weekEnd.toEpochMs())
             }
         }
 
-    /** Total / hourly / per-app for the SELECTED day. Re-read when the selection moves. */
-    private val dayScreenTimeFlow = _selection
+    /**
+     * The hourly heatmap for the SELECTED day — the one day-scoped read that remains, because a
+     * within-day breakdown is a different question from a per-day total and 7x24 buckets are not
+     * worth carrying for the six days nobody is looking at.
+     */
+    private val hourlyFlow = _selection
         .map { it.selected }
         .distinctUntilChanged()
         .flatMapLatest { date ->
@@ -132,39 +147,39 @@ class StatsViewModel @Inject constructor(
                 val dayEndMs = if (date == LocalDate.now()) {
                     System.currentTimeMillis()
                 } else {
-                    dayStartMs + DAY_MS
+                    timeTracker.startOfDayDaysBefore(dayStartMs, -1)
                 }
-                DayScreenTime(
-                    totalMs = screenTimeProvider.getTotalScreenTime(dayStartMs, dayEndMs),
-                    hourlyMs = screenTimeProvider.getHourlyScreenTime(dayStartMs, dayEndMs),
-                    perApp = screenTimeProvider.getPerAppScreenTime(dayStartMs, dayEndMs)
-                )
+                screenTimeProvider.getHourlyScreenTime(dayStartMs, dayEndMs)
             }
         }
 
     val uiState: StateFlow<StatsUiState> = combine(
         weekEventsFlow,
-        weeklyScreenTimeFlow,
-        dayScreenTimeFlow,
+        weeklyUsageFlow,
+        hourlyFlow,
         _selection
-    ) { weekEvents, weeklyTotals, dayScreenTime, selection ->
-        buildUiState(weekEvents, weeklyTotals, dayScreenTime, selection)
+    ) { weekEvents, weeklyUsage, hourlyMs, selection ->
+        buildUiState(weekEvents, weeklyUsage, hourlyMs, selection)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), StatsUiState())
 
     private suspend fun buildUiState(
         weekEvents: List<UsageEvent>,
-        weeklyTotals: List<Long>,
-        dayScreenTime: DayScreenTime,
+        weeklyUsage: WeeklyUsage,
+        hourlyMs: List<Long>,
         selection: StatsDaySelection
     ): StatsUiState {
         val today = LocalDate.now()
         val hasPermission = screenTimeProvider.hasPermission()
         val isToday = selection.isSelectedToday(today)
         val dayStartMs = selection.selected.toEpochMs()
-        val dayEndMs = dayStartMs + DAY_MS
-        val weekEndStartMs = selection.weekEnd.toEpochMs()
+        val dayEndMs = timeTracker.startOfDayDaysBefore(dayStartMs, -1)
+        // The window the LOADED series actually covers. `selection` moves the instant an arrow is
+        // tapped while the new window is still in flight, so labelling the bars from the selection
+        // would, for that frame, print new dates over old numbers — the exact defect being fixed.
+        val weekEndStartMs = weeklyUsage.lastDayStartMs
+        val dayPerApp = weeklyUsage.perAppOn(dayStartMs)
 
-        val byPackage = dayScreenTime.perApp.entries.sortedByDescending { it.value }
+        val byPackage = dayPerApp.entries.sortedByDescending { it.value }
         val maxMs = byPackage.maxOfOrNull { it.value } ?: 1L
 
         val appStats = byPackage
@@ -182,11 +197,15 @@ class StatsViewModel @Inject constructor(
         val selectedDayEvents = weekEvents.filter { it.timestamp in dayStartMs until dayEndMs }
 
         return StatsUiState(
-            totalFormatted = formatDayTotal(dayScreenTime.totalMs, timeTracker),
+            // The hero total is the sum of the very list under it, on the very bar above it.
+            totalFormatted = formatDayTotal(dayPerApp.values.sum(), timeTracker),
             appStats = appStats,
-            weeklyData = statsCalculator.buildWeeklyDataFromTotals(weeklyTotals, weekEndStartMs),
+            weeklyData = statsCalculator.buildWeeklyDataFromTotals(
+                weeklyUsage.dailyTotals(),
+                weekEndStartMs
+            ),
             trendData = statsCalculator.buildTrendData(weekEvents, weekEndStartMs),
-            hourlyMs = dayScreenTime.hourlyMs,
+            hourlyMs = hourlyMs,
             // Anchored on the window's last day, not the selected one: a streak is a
             // "how am I doing right now" number, and scrubbing back through the week to
             // inspect a Tuesday must not rewrite it.
@@ -197,20 +216,13 @@ class StatsViewModel @Inject constructor(
             selectedDayIndex = selection.selectedIndex,
             weekRangeLabel = StatsDateLabels.range(selection.weekStart, selection.weekEnd, today),
             canGoForward = selection.canGoForward(today),
-            weekTotalFormatted = timeTracker.formatDuration(weeklyTotals.sum()),
+            weekTotalFormatted = timeTracker.formatDuration(weeklyUsage.dailyTotals().sum()),
             selectedDayBlocked = selectedDayEvents.count { it.wasBlocked },
             selectedDayWalkedAway = selectedDayEvents.count { it.userChangedMind }
         )
     }
 
-    private data class DayScreenTime(
-        val totalMs: Long,
-        val hourlyMs: List<Long>,
-        val perApp: Map<String, Long>
-    )
-
     companion object {
-        private const val DAY_MS = 24L * 60L * 60L * 1000L
         private const val POLL_INTERVAL_MS = 30_000L
 
         fun LocalDate.toEpochMs(): Long =
@@ -234,8 +246,8 @@ class StatsViewModel @Inject constructor(
          * already ended cannot change, so it emits once and completes — a phone left on a past
          * day used to keep waking every 30 s to re-read seven identical binder queries.
          *
-         * Runs on IO: `getDailyScreenTimesForWeek` is seven binder round-trips and this feeds a
-         * `stateIn(viewModelScope)`, i.e. the main thread.
+         * Runs on IO: `getWeeklyUsage` is a binder read plus a walk over a week of usage events,
+         * and this feeds a `stateIn(viewModelScope)`, i.e. the main thread.
          */
         internal fun <T> polled(isLive: Boolean, produce: suspend () -> T): Flow<T> = flow {
             while (true) {

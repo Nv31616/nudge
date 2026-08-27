@@ -83,7 +83,9 @@ class HomeViewModel @Inject constructor(
         .shareIn(viewModelScope, SharingStarted.WhileSubscribed(5000), replay = 1)
 
     private val countsFlow = dayStartFlow.flatMapLatest { dayStart ->
-        val dayEnd = dayStart + DAY_MS
+        // Calendar arithmetic: on a DST day `+ DAY_MS` is an hour off true local midnight, so
+        // today's counts would take an hour of yesterday's (or drop an hour of their own).
+        val dayEnd = timeTracker.startOfDayDaysBefore(dayStart, -1)
         combine(
             usageRepository.getBlockedCountForDay(dayStart, dayEnd),
             usageRepository.getChangedMindCountForDay(dayStart, dayEnd),
@@ -105,23 +107,26 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * `UsageStatsManager` has no Flow, so screen time is polled. On IO: the weekly series is
-     * seven binder round-trips and this feeds the main thread via `stateIn`.
+     * `UsageStatsManager` has no Flow, so screen time is polled. On IO: it is a binder read plus
+     * a walk over a week of usage events, and this feeds the main thread via `stateIn`.
      * Derived from [dayStartFlow] so every reading is bucketed against the same "today"
      * the rest of the dashboard uses; the snapshot carries that day start along for the
      * chart builder.
+     *
+     * The "Screen Time" tile and the last bar of the week chart are the SAME number here — the
+     * tile reads today's cell out of the weekly value rather than issuing its own day query.
+     * Two reads would be two chances to disagree on one screen, which is the bug this replaced.
      */
     private val screenTimeFlow = dayStartFlow.flatMapLatest { dayStart ->
         flow {
             while (true) {
+                val weeklyUsage = screenTimeProvider.getWeeklyUsage(dayStart)
                 emit(
                     ScreenTimeSnapshot(
                         dayStartMs = dayStart,
                         hasPermission = screenTimeProvider.hasPermission(),
-                        todayMs = screenTimeProvider.getTotalScreenTime(
-                            dayStart, System.currentTimeMillis()
-                        ),
-                        weeklyTotals = screenTimeProvider.getDailyScreenTimesForWeek(dayStart)
+                        todayMs = weeklyUsage.totalOn(dayStart),
+                        weeklyTotals = weeklyUsage.dailyTotals()
                     )
                 )
                 delay(POLL_INTERVAL_MS)
@@ -196,8 +201,8 @@ class HomeViewModel @Inject constructor(
     }
 
     companion object {
-        private const val DAY_MS = 24L * 60L * 60L * 1000L
-        private const val WEEK_DAYS = 7
+        /** Days of events behind the trend chart. Matches the screen-time window's own width. */
+        private const val WEEK_DAYS = ScreenTimeProvider.WEEK_DAYS
         private const val POLL_INTERVAL_MS = 30_000L
     }
 }

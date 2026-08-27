@@ -12,8 +12,13 @@ import javax.inject.Inject
  * Pure calculation logic for stats screen, extracted for testability.
  * No Android dependencies -- operates only on data models.
  *
- * Methods that take a [referenceDayStartMs] use that as the "anchor" day
+ * Methods that take a `referenceDayStartMs` use that as the "anchor" day
  * (the last day of a 7-day window). When omitted, defaults to today.
+ *
+ * Day boundaries are walked with [TimeTracker.startOfDayDaysBefore] (calendar arithmetic), never
+ * `i * 86_400_000`: every series here is drawn beside the screen-time bars, which are bucketed by
+ * true local midnight, and across a DST transition raw subtraction would slide these labels and
+ * counts an hour off — one chart's "Wed" covering a different 24 hours than its neighbour's.
  */
 class StatsCalculator @Inject constructor(
     private val timeTracker: TimeTracker
@@ -30,7 +35,7 @@ class StatsCalculator @Inject constructor(
         val result = mutableListOf<DayData>()
 
         for (i in 6 downTo 0) {
-            val dayStart = referenceDayStartMs - i * DAY_MS
+            val dayStart = timeTracker.startOfDayDaysBefore(referenceDayStartMs, i)
             val label = getDayLabel(dayStart)
             val totalMs = dailyTotals.getOrElse(6 - i) { 0L }
             result.add(DayData(label = label, totalMs = totalMs))
@@ -43,8 +48,8 @@ class StatsCalculator @Inject constructor(
         val result = mutableListOf<TrendDay>()
 
         for (i in 6 downTo 0) {
-            val dayStart = referenceDayStartMs - i * DAY_MS
-            val dayEnd = dayStart + DAY_MS
+            val dayStart = timeTracker.startOfDayDaysBefore(referenceDayStartMs, i)
+            val dayEnd = timeTracker.startOfDayDaysBefore(referenceDayStartMs, i - 1)
             val dayEvents = weekEvents.filter { it.timestamp in dayStart until dayEnd }
 
             val blockedCount = dayEvents.count { it.wasBlocked }
@@ -68,8 +73,8 @@ class StatsCalculator @Inject constructor(
     ): List<TrendDay> {
         val result = mutableListOf<TrendDay>()
         for (i in 6 downTo 0) {
-            val dayStart = referenceDayStartMs - i * DAY_MS
-            val dayEnd = dayStart + DAY_MS
+            val dayStart = timeTracker.startOfDayDaysBefore(referenceDayStartMs, i)
+            val dayEnd = timeTracker.startOfDayDaysBefore(referenceDayStartMs, i - 1)
             val dayEvents = weekEvents
                 .filter { it.packageName == packageName && it.timestamp in dayStart until dayEnd }
             val blockedCount = dayEvents.count { it.wasBlocked }
@@ -89,8 +94,8 @@ class StatsCalculator @Inject constructor(
         var streak = 0
 
         for (i in 0..6) {
-            val dayStart = referenceDayStartMs - i * DAY_MS
-            val dayEnd = dayStart + DAY_MS
+            val dayStart = timeTracker.startOfDayDaysBefore(referenceDayStartMs, i)
+            val dayEnd = timeTracker.startOfDayDaysBefore(referenceDayStartMs, i - 1)
             val dayEvents = weekEvents.filter { it.timestamp in dayStart until dayEnd }
 
             val hadWalkedAway = dayEvents.any { it.userChangedMind }
@@ -108,6 +113,10 @@ class StatsCalculator @Inject constructor(
         return streak
     }
 
+    /**
+     * The day a bar is labelled with — and, everywhere a bar also carries a count, the bucket
+     * that count was gathered into.
+     */
     private fun getDayLabel(dayStartMs: Long): String {
         val cal = Calendar.getInstance(TimeZone.getDefault())
         cal.timeInMillis = dayStartMs
@@ -123,7 +132,4 @@ class StatsCalculator @Inject constructor(
         }
     }
 
-    companion object {
-        private const val DAY_MS = 24L * 60L * 60L * 1000L
-    }
 }
