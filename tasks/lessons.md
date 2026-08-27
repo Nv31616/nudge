@@ -74,3 +74,19 @@ Three things this dragged out of the same drawer, all worth checking for by name
 - **Layout arithmetic copy-pasted between the hit-test and the draw block.** Each chart computed bar widths twice, so a chart could hit-test against a layout it was not drawing, and label rows using `SpaceBetween` (cells of `width/count`) drifted off bars of `(width - totalSpacing)/count`. One `ChartGeometry`, unit-tested.
 
 Also: keying `Modifier.pointerInput(days, onSelectDay)` on a `viewModel::method` reference rebuilds the gesture detector on **every** recomposition, a method reference is a fresh object each time. Key on what the hit-test actually reads (the bar count) and reach the callback through `rememberUpdatedState`.
+
+## A chart and its drill-down must be ONE read, not two implementations expected to agree (2026-08-27)
+
+Device QA tapped a Wednesday whose screen-time bar was tall and dark and got a drill-down reading hero total "0s", "No usage recorded", empty app list. Each half was internally consistent; they described the same calendar day and disagreed completely.
+
+Root cause: two computations. The weekly bars came from `queryUsageStats(INTERVAL_DAILY)`, pre-aggregated buckets that are stale and midnight-misaligned on Android 12+, a fact `ScreenTimeProvider`'s own comment already stated ten lines above the code that used them, while the drill-down summed live `queryEvents` ACTIVITY_RESUMED→PAUSED spans. This is the [[Compose chart owning its own selection]] lesson one layer down: same shape, two answers to one question, and the fix is the same shape too.
+
+**The fix that generalises: do not make the two agree, make them the same value.** `getWeeklyUsage` returns per-day *per-app* totals from one `queryEvents` pass; the bars are `dailyTotals()`, the drill-down is `perAppOn(dayStart)`, Home's Screen Time tile is `totalOn(todayStart)`. Then the day-scoped APIs that made a second computation possible were **deleted**, a leftover `getTotalScreenTime(dayStart, dayEnd)` is an invitation, and the next person will accept it. A source-level contract test asserts the deleted signatures stay deleted and that each screen reads the week exactly once.
+
+Four things worth checking for by name next time:
+- **Mirroring semantics between two implementations is not a fix.** The tempting version of this was "make the weekly pass follow the single-day path's rules exactly". That leaves two code paths, and it also permanently inherits that path's blind spot: a session crossing midnight has one endpoint outside each day's own query, so a per-day query drops it from *both* days. One pass over the whole window can see it and split it.
+- **A day is addressed by its start timestamp, never by an index into whatever is loaded.** The selection moves the instant an arrow is tapped while the new window is still in flight; an index resolves to a different date for that frame, one day's numbers under another day's heading, which is the original bug again. Return empty for a day you do not hold, and label the bars from the window the DATA covers, not from the selection.
+- **`dayStart + 86_400_000` is not a day.** Two days a year it is an hour off true local midnight, and these series are drawn side by side, so one chart's "Wed" would cover different hours from its neighbour's. `TimeTracker.startOfDayDaysBefore` everywhere, including `-1` to walk forward to the exclusive end of a window.
+- **Malformed event sequences must be worth zero, never negative.** The old code did a bare `paused - resumed`; a backwards pair (the platform emits them) would have subtracted from a bar. Clamp the span, then take the overlap.
+
+Cost note for the 3GB Pixel 3: this went from ~10 binder round-trips per 30 s poll (7 weekly queries + 3 day queries) to 2 (one week of events + one hourly read), at the price of walking a week of events in memory, a few thousand cheap iterations.
