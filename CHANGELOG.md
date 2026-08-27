@@ -2,6 +2,18 @@
 
 All notable changes to Nudge are documented here. Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.15.0] - 2026-08-27
+
+### Added
+- **Backups now carry your settings too.** Exporting takes your custom block messages and your protection settings — the content filter, Strict Mode and its difficulty, the daily pass — along with your rules and history, so restoring gives you back the Nudge you actually set up rather than a blank one. Old backup files still import exactly as before, and new files still open in older versions of Nudge. Restoring settings that would weaken your protection asks for the Strict Mode unlock first, so a backup file can't be a way around your own commitment.
+- **Your last 7 days, right on the dashboard.** Two small charts on the home screen — screen time per day, and blocks vs. walk-aways — with the week's total. Tap them to jump into the full stats page. The Screen Time tile is tappable now too.
+
+### Fixed
+- **Tapping a day in the weekly charts now actually shows you that day.** Selecting a bar used to highlight it and change nothing else; now the screen-time total, the hourly breakdown, the per-app list and the blocked/walked-away numbers all follow the day you picked, the header says which day you're looking at, and a "Back to today" chip appears whenever you've wandered off today. Same fix on each app's detail page.
+- **The weekly bars and the day view can no longer disagree.** They were computed from two different Android sources, so a bar could look tall while its own day view read "0s". Both now come from one reading of the same usage data — the bar for a day and the numbers behind it are literally the same value. As a bonus, a session that runs across midnight is now counted in both days it touched instead of vanishing from both.
+- **Leaving an app by pressing Home now re-arms its delay.** Completing a delay used to grant that app a pass that only ended if you opened some other app first — Home → reopen skipped the delay entirely, forever. Going home now ends the pass (pulling down the notification shade or opening the keyboard inside the app does not — those never meant you left).
+- The dashboard's idea of "today" now rolls over correctly at midnight everywhere on the screen, and weekly windows land on true local midnight even across a daylight-saving change.
+
 ## [1.14.0] - 2026-08-20
 
 ### Added
