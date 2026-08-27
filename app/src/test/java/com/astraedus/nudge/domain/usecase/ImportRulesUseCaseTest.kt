@@ -4,8 +4,10 @@ import com.astraedus.nudge.data.db.entity.AppGroup
 import com.astraedus.nudge.data.db.entity.AppGroupMember
 import com.astraedus.nudge.data.db.entity.BlockRule
 import com.astraedus.nudge.data.db.entity.UsageEvent
+import com.astraedus.nudge.data.export.ExportedSettings
 import com.astraedus.nudge.data.export.HistoryMerge
 import com.astraedus.nudge.data.export.RuleExporter
+import com.astraedus.nudge.data.preferences.NudgePreferences
 import com.astraedus.nudge.data.repository.BlockRuleRepository
 import com.astraedus.nudge.data.repository.UsageRepository
 import io.mockk.coEvery
@@ -15,6 +17,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -42,6 +45,17 @@ class ImportRulesUseCaseTest {
     /** Stands in for `usage_events`: what the fake DB holds, and what a second import sees. */
     private lateinit var storedEvents: MutableList<UsageEvent>
 
+    private lateinit var preferences: NudgePreferences
+
+    /**
+     * Stands in for the settings DataStore. Starts at the app's real defaults so "did this import
+     * weaken protection?" is asked against a plausible device, not against nulls.
+     */
+    private lateinit var deviceSettings: ExportedSettings
+
+    /** Every [NudgePreferences.applyImportedSettings] call, in order. */
+    private lateinit var appliedSettings: MutableList<ExportedSettings>
+
     @Before
     fun setUp() {
         repository = mockk()
@@ -50,6 +64,15 @@ class ImportRulesUseCaseTest {
         createdGroups = mutableListOf()
         addedMembers = mutableListOf()
         storedEvents = mutableListOf()
+        appliedSettings = mutableListOf()
+        deviceSettings = DEVICE_DEFAULTS
+
+        preferences = mockk()
+        coEvery { preferences.exportableSettings() } answers { deviceSettings }
+        coEvery { preferences.applyImportedSettings(any()) } answers {
+            appliedSettings.add(firstArg())
+            Unit
+        }
 
         // A real (if tiny) table rather than a stub: idempotency is a property of the SECOND
         // import, so the fake has to actually remember what the first one wrote.
@@ -75,7 +98,7 @@ class ImportRulesUseCaseTest {
         }
         coEvery { repository.addToGroup(any()) } answers { addedMembers.add(firstArg()); Unit }
 
-        useCase = ImportRulesUseCase(repository, usageRepository, RuleExporter())
+        useCase = ImportRulesUseCase(repository, usageRepository, preferences, RuleExporter())
     }
 
     private suspend fun import(json: String): ImportOutcome =
@@ -373,5 +396,195 @@ class ImportRulesUseCaseTest {
         import(historyJson(event(ts = 5_000), event(ts = 9_000)))
 
         coVerify { usageRepository.getEventKeysInRange(5_000L, 9_000L) }
+    }
+
+    // --- Settings --------------------------------------------------------------------------
+
+    private fun settingsJson(body: String) = """
+        {
+            "version": 1,
+            "rules": [{"packageName": "com.app1", "mode": "DELAY"}],
+            "settings": {$body}
+        }
+    """.trimIndent()
+
+    @Test
+    fun `a file's settings reach the preferences in a single write`() = runTest {
+        val outcome = import(
+            settingsJson(
+                """
+                "contentFilterEnabled": true,
+                "contentFilterMode": "DELAY",
+                "contentFilterStrictKeywords": true,
+                "strictModeEnabled": true,
+                "strictModeChallengeLength": 48,
+                "emergencyPassEnabled": false,
+                "customDelayTitles": "Pause.",
+                "customDelaySubtitles": "Breathe.",
+                "customHardBlockMessages": "Not today."
+                """.trimIndent()
+            )
+        )
+
+        assertNull(outcome.error)
+        assertTrue(outcome.settingsApplied)
+        assertEquals(0, outcome.settingsInvalidCount)
+        // All-or-nothing: one call, so DataStore commits one transaction.
+        assertEquals(1, appliedSettings.size)
+        assertEquals(
+            ExportedSettings(
+                contentFilterEnabled = true,
+                contentFilterMode = "DELAY",
+                contentFilterStrictKeywords = true,
+                strictModeEnabled = true,
+                strictModeChallengeLength = 48,
+                emergencyPassEnabled = false,
+                customDelayTitles = "Pause.",
+                customDelaySubtitles = "Breathe.",
+                customHardBlockMessages = "Not today."
+            ),
+            appliedSettings.single()
+        )
+        // The rules in the same file still import.
+        assertEquals(1, outcome.importedCount)
+    }
+
+    /** The backward-compatibility case: every backup written before settings existed. */
+    @Test
+    fun `a file with no settings never touches the preferences`() = runTest {
+        val outcome = import("""{"version": 1, "rules": [{"packageName": "com.app1", "mode": "DELAY"}]}""")
+
+        assertNull(outcome.error)
+        assertEquals(1, outcome.importedCount)
+        assertFalse(outcome.settingsApplied)
+        assertEquals(0, outcome.settingsInvalidCount)
+        assertTrue("an older backup must not rewrite settings", appliedSettings.isEmpty())
+    }
+
+    @Test
+    fun `an unreadable setting is counted while the readable ones still apply`() = runTest {
+        val outcome = import(
+            settingsJson(
+                """
+                "contentFilterEnabled": "yes",
+                "contentFilterMode": "TELEPORT",
+                "strictModeChallengeLength": 999999,
+                "customDelayTitles": "Pause."
+                """.trimIndent()
+            )
+        )
+
+        assertNull("bad settings must never fail the file", outcome.error)
+        assertEquals("rule skips stay their own number", 0, outcome.invalidCount)
+        assertEquals(3, outcome.settingsInvalidCount)
+        assertTrue(outcome.settingsApplied)
+        assertEquals(
+            ExportedSettings(customDelayTitles = "Pause."),
+            appliedSettings.single()
+        )
+        assertEquals(1, outcome.importedCount)
+    }
+
+    /** Settings alone are something worth importing -- the file is not "nothing readable". */
+    @Test
+    fun `a file whose only readable content is settings still imports`() = runTest {
+        val outcome = import(
+            """
+            {
+                "version": 1,
+                "rules": [{"packageName": "com.app1", "mode": "TELEPORT"}],
+                "settings": {"strictModeEnabled": true}
+            }
+            """.trimIndent()
+        )
+
+        assertNull(outcome.error)
+        assertEquals(0, outcome.importedCount)
+        assertEquals(1, outcome.invalidCount)
+        assertTrue(outcome.settingsApplied)
+        assertEquals(ExportedSettings(strictModeEnabled = true), appliedSettings.single())
+    }
+
+    /**
+     * A `settings` key of the wrong SHAPE is evidence about the whole file, not one entry -- same
+     * contract `rules` / `groups` / `history` already have.
+     */
+    @Test
+    fun `a settings key that is not an object fails loudly and writes nothing`() = runTest {
+        val outcome = import(
+            """{"version": 1, "rules": [{"packageName": "com.app1", "mode": "DELAY"}], "settings": []}"""
+        )
+
+        assertNotNull(outcome.error)
+        assertTrue(addedRules.isEmpty())
+        assertTrue(appliedSettings.isEmpty())
+    }
+
+    // --- The Strict Mode gate -----------------------------------------------------------------
+
+    private suspend fun weakens(json: String): Boolean =
+        useCase.weakensProtection(useCase.preview(json).result)
+
+    @Test
+    fun `a rules-only file never weakens protection`() = runTest {
+        assertFalse(
+            weakens("""{"version": 1, "rules": [{"packageName": "com.app1", "mode": "DELAY"}]}""")
+        )
+    }
+
+    @Test
+    fun `turning strict mode off in a file weakens protection`() = runTest {
+        deviceSettings = DEVICE_DEFAULTS.copy(strictModeEnabled = true)
+
+        assertTrue(weakens(settingsJson(""""strictModeEnabled": false""")))
+    }
+
+    @Test
+    fun `turning strict mode on in a file does not weaken protection`() = runTest {
+        assertFalse(weakens(settingsJson(""""strictModeEnabled": true""")))
+    }
+
+    @Test
+    fun `lowering the challenge difficulty weakens protection`() = runTest {
+        deviceSettings = DEVICE_DEFAULTS.copy(strictModeEnabled = true, strictModeChallengeLength = 48)
+
+        assertTrue(weakens(settingsJson(""""strictModeChallengeLength": 12""")))
+    }
+
+    /**
+     * The gate must read the CURRENT device, not anything captured at preview time -- the user can
+     * change a setting between seeing the dialog and confirming it.
+     */
+    @Test
+    fun `the gate re-reads the live settings rather than a snapshot`() = runTest {
+        val json = settingsJson(""""emergencyPassEnabled": true""")
+        deviceSettings = DEVICE_DEFAULTS.copy(emergencyPassEnabled = true)
+        assertFalse("pass already on -> nothing weakens", weakens(json))
+
+        deviceSettings = DEVICE_DEFAULTS.copy(emergencyPassEnabled = false)
+        assertTrue("pass off -> the file re-opens the bypass", weakens(json))
+    }
+
+    /** Custom block messages change what the overlay SAYS, never what it blocks. */
+    @Test
+    fun `restoring custom messages is not a weakening`() = runTest {
+        deviceSettings = DEVICE_DEFAULTS.copy(strictModeEnabled = true)
+
+        assertFalse(weakens(settingsJson(""""customDelayTitles": "Pause.", "customHardBlockMessages": """"")))
+    }
+
+    private companion object {
+        /** The app's own out-of-the-box settings, as `NudgePreferences` defaults them. */
+        val DEVICE_DEFAULTS = ExportedSettings(
+            contentFilterEnabled = false,
+            contentFilterMode = "HARD_BLOCK",
+            contentFilterStrictKeywords = false,
+            strictModeEnabled = false,
+            strictModeChallengeLength = 24,
+            emergencyPassEnabled = true,
+            customDelayTitles = "",
+            customDelaySubtitles = "",
+            customHardBlockMessages = ""
+        )
     }
 }
