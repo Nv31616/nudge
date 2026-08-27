@@ -295,6 +295,33 @@ class StatsViewModelTest {
         assertEquals(0, cal.get(Calendar.SECOND))
     }
 
+    // --- formatDayTotal: one wording for a day's total, on every screen ---
+
+    @Test
+    fun `formatDayTotal calls a genuinely unused day zero, not under a minute`() {
+        // The stats screen used to guard with `ms < 60_000` and so printed "< 1m" for a day
+        // with NO usage, while App Detail printed "0s" for the same zero.
+        assertEquals("0s", StatsViewModel.formatDayTotal(0L, timeTracker))
+    }
+
+    @Test
+    fun `formatDayTotal collapses any non-zero sub-minute total`() {
+        assertEquals("< 1m", StatsViewModel.formatDayTotal(1L, timeTracker))
+        assertEquals("< 1m", StatsViewModel.formatDayTotal(59_999L, timeTracker))
+    }
+
+    @Test
+    fun `formatDayTotal defers to the shared duration formatter from a minute up`() {
+        assertEquals(
+            timeTracker.formatDuration(60_000L),
+            StatsViewModel.formatDayTotal(60_000L, timeTracker)
+        )
+        assertEquals(
+            timeTracker.formatDuration(3 * 3_600_000L),
+            StatsViewModel.formatDayTotal(3 * 3_600_000L, timeTracker)
+        )
+    }
+
     // --- Helpers ---
 
     private fun makeEvent(

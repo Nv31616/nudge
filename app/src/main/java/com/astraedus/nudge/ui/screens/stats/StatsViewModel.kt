@@ -1,5 +1,6 @@
 package com.astraedus.nudge.ui.screens.stats
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.astraedus.nudge.data.db.entity.UsageEvent
@@ -10,20 +11,23 @@ import com.astraedus.nudge.domain.engine.TimeTracker
 import com.astraedus.nudge.ui.screens.stats.charts.DayData
 import com.astraedus.nudge.ui.screens.stats.charts.TrendDay
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import androidx.compose.runtime.Immutable
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.format.TextStyle
-import java.util.Locale
 import javax.inject.Inject
 
 @Immutable
@@ -45,7 +49,18 @@ data class StatsUiState(
     val streakDays: Int = 0,
     val hasUsagePermission: Boolean = true,
     val isToday: Boolean = true,
-    val dateLabel: String = "Today"
+    val dateLabel: String = "Today",
+    /** Which of the 7 bars is the selected day. Drives chart highlighting. */
+    val selectedDayIndex: Int = StatsDaySelection.WINDOW_DAYS - 1,
+    /** "Last 7 days", or explicit dates once the user scrolls back. */
+    val weekRangeLabel: String = "Last 7 days",
+    /** Whether the forward arrow does anything. */
+    val canGoForward: Boolean = false,
+    /** Screen time across the whole 7-bar window, already formatted. */
+    val weekTotalFormatted: String = "0s",
+    /** Nudge counts for the SELECTED day — the numbers a tapped bar has to move. */
+    val selectedDayBlocked: Int = 0,
+    val selectedDayWalkedAway: Int = 0
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -58,66 +73,98 @@ class StatsViewModel @Inject constructor(
     private val statsCalculator: StatsCalculator
 ) : ViewModel() {
 
-    private val _selectedDate = MutableStateFlow(LocalDate.now())
-    val selectedDate: StateFlow<LocalDate> = _selectedDate
+    private val _selection = MutableStateFlow(StatsDaySelection.startingAt(LocalDate.now()))
 
-    // Name caching now lives in InstalledAppsRepository (per-package, off-main-thread).
+    /** The single source of truth for "which day am I looking at". */
+    val selection: StateFlow<StatsDaySelection> = _selection.asStateFlow()
+
+    // Name caching lives in InstalledAppsRepository (per-package, off-main-thread).
     private suspend fun resolveAppName(packageName: String): String =
         installedAppsRepository.resolveAppName(packageName)
 
     fun goToPreviousDay() {
-        _selectedDate.value = _selectedDate.value.minusDays(1)
+        _selection.value = _selection.value.previousDay()
     }
 
     fun goToNextDay() {
-        val next = _selectedDate.value.plusDays(1)
-        if (!next.isAfter(LocalDate.now())) {
-            _selectedDate.value = next
+        _selection.value = _selection.value.nextDay(LocalDate.now())
+    }
+
+    /** Called when a bar is tapped. This is what the old per-chart `selectedIndex` never did. */
+    fun selectDay(index: Int) {
+        _selection.value = _selection.value.selectIndex(index, LocalDate.now())
+    }
+
+    fun jumpToToday() {
+        _selection.value = _selection.value.jumpToToday(LocalDate.now())
+    }
+
+    /**
+     * Room events covering the whole displayed window. Keyed on the WINDOW, not the selected
+     * day, so tapping between bars re-slices the list already in memory instead of
+     * re-subscribing to a new query.
+     */
+    private val weekEventsFlow = _selection
+        .map { it.weekEnd }
+        .distinctUntilChanged()
+        .flatMapLatest { weekEnd ->
+            val windowStart = weekEnd.minusDays((StatsDaySelection.WINDOW_DAYS - 1).toLong())
+            usageRepository.getEventsSince(windowStart.toEpochMs())
         }
-    }
 
-    private val weekEventsFlow = _selectedDate.flatMapLatest { date ->
-        val dayStartMs = date.toEpochMs()
-        val weekStart = dayStartMs - 6 * DAY_MS
-        usageRepository.getEventsSince(weekStart)
-    }
-
-    private val screenTimeFlow = _selectedDate.flatMapLatest { date ->
-        flow {
-            while (true) {
-                val dayStartMs = date.toEpochMs()
-                val isToday = date == LocalDate.now()
-                val dayEndMs = if (isToday) System.currentTimeMillis() else dayStartMs + DAY_MS
-                val total = screenTimeProvider.getTotalScreenTime(dayStartMs, dayEndMs)
-                val weekly = screenTimeProvider.getDailyScreenTimesForWeek(dayStartMs)
-                val hourly = screenTimeProvider.getHourlyScreenTime(dayStartMs, dayEndMs)
-                val perApp = screenTimeProvider.getPerAppScreenTime(dayStartMs, dayEndMs)
-                emit(ScreenTimeSnapshot(total, weekly, hourly, perApp))
-                delay(30_000L)
+    /** 7 daily totals for the bars. Only re-read when the window moves. */
+    private val weeklyScreenTimeFlow = _selection
+        .map { it.weekEnd }
+        .distinctUntilChanged()
+        .flatMapLatest { weekEnd ->
+            polled(isLive = weekEnd == LocalDate.now()) {
+                screenTimeProvider.getDailyScreenTimesForWeek(weekEnd.toEpochMs())
             }
         }
-    }
+
+    /** Total / hourly / per-app for the SELECTED day. Re-read when the selection moves. */
+    private val dayScreenTimeFlow = _selection
+        .map { it.selected }
+        .distinctUntilChanged()
+        .flatMapLatest { date ->
+            polled(isLive = date == LocalDate.now()) {
+                val dayStartMs = date.toEpochMs()
+                val dayEndMs = if (date == LocalDate.now()) {
+                    System.currentTimeMillis()
+                } else {
+                    dayStartMs + DAY_MS
+                }
+                DayScreenTime(
+                    totalMs = screenTimeProvider.getTotalScreenTime(dayStartMs, dayEndMs),
+                    hourlyMs = screenTimeProvider.getHourlyScreenTime(dayStartMs, dayEndMs),
+                    perApp = screenTimeProvider.getPerAppScreenTime(dayStartMs, dayEndMs)
+                )
+            }
+        }
 
     val uiState: StateFlow<StatsUiState> = combine(
         weekEventsFlow,
-        screenTimeFlow,
-        _selectedDate
-    ) { weekEvents, screenTime, date ->
-        buildUiState(weekEvents, screenTime, date)
+        weeklyScreenTimeFlow,
+        dayScreenTimeFlow,
+        _selection
+    ) { weekEvents, weeklyTotals, dayScreenTime, selection ->
+        buildUiState(weekEvents, weeklyTotals, dayScreenTime, selection)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), StatsUiState())
 
     private suspend fun buildUiState(
         weekEvents: List<UsageEvent>,
-        screenTime: ScreenTimeSnapshot,
-        date: LocalDate
+        weeklyTotals: List<Long>,
+        dayScreenTime: DayScreenTime,
+        selection: StatsDaySelection
     ): StatsUiState {
+        val today = LocalDate.now()
         val hasPermission = screenTimeProvider.hasPermission()
-        val isToday = date == LocalDate.now()
-        val dayStartMs = date.toEpochMs()
+        val isToday = selection.isSelectedToday(today)
+        val dayStartMs = selection.selected.toEpochMs()
+        val dayEndMs = dayStartMs + DAY_MS
+        val weekEndStartMs = selection.weekEnd.toEpochMs()
 
-        val byPackage = screenTime.perApp.entries
-            .sortedByDescending { it.value }
-
+        val byPackage = dayScreenTime.perApp.entries.sortedByDescending { it.value }
         val maxMs = byPackage.maxOfOrNull { it.value } ?: 1L
 
         val appStats = byPackage
@@ -132,46 +179,70 @@ class StatsViewModel @Inject constructor(
                 )
             }
 
-        val weeklyData = statsCalculator.buildWeeklyDataFromTotals(screenTime.weeklyDailyTotals, dayStartMs)
-
-        val totalFormatted = if (hasPermission && screenTime.totalTodayMs < 60_000L) {
-            "< 1m"
-        } else {
-            timeTracker.formatDuration(screenTime.totalTodayMs)
-        }
-
-        val dateLabel = if (isToday) "Today" else formatDateLabel(date)
+        val selectedDayEvents = weekEvents.filter { it.timestamp in dayStartMs until dayEndMs }
 
         return StatsUiState(
-            totalFormatted = totalFormatted,
+            totalFormatted = formatDayTotal(dayScreenTime.totalMs, timeTracker),
             appStats = appStats,
-            weeklyData = weeklyData,
-            trendData = statsCalculator.buildTrendData(weekEvents, dayStartMs),
-            hourlyMs = screenTime.hourlyTodayMs,
-            streakDays = statsCalculator.calculateStreak(weekEvents, dayStartMs),
+            weeklyData = statsCalculator.buildWeeklyDataFromTotals(weeklyTotals, weekEndStartMs),
+            trendData = statsCalculator.buildTrendData(weekEvents, weekEndStartMs),
+            hourlyMs = dayScreenTime.hourlyMs,
+            // Anchored on the window's last day, not the selected one: a streak is a
+            // "how am I doing right now" number, and scrubbing back through the week to
+            // inspect a Tuesday must not rewrite it.
+            streakDays = statsCalculator.calculateStreak(weekEvents, weekEndStartMs),
             hasUsagePermission = hasPermission,
             isToday = isToday,
-            dateLabel = dateLabel
+            dateLabel = StatsDateLabels.day(selection.selected, today),
+            selectedDayIndex = selection.selectedIndex,
+            weekRangeLabel = StatsDateLabels.range(selection.weekStart, selection.weekEnd, today),
+            canGoForward = selection.canGoForward(today),
+            weekTotalFormatted = timeTracker.formatDuration(weeklyTotals.sum()),
+            selectedDayBlocked = selectedDayEvents.count { it.wasBlocked },
+            selectedDayWalkedAway = selectedDayEvents.count { it.userChangedMind }
         )
     }
 
-    private data class ScreenTimeSnapshot(
-        val totalTodayMs: Long,
-        val weeklyDailyTotals: List<Long>,
-        val hourlyTodayMs: List<Long>,
+    private data class DayScreenTime(
+        val totalMs: Long,
+        val hourlyMs: List<Long>,
         val perApp: Map<String, Long>
     )
 
     companion object {
         private const val DAY_MS = 24L * 60L * 60L * 1000L
+        private const val POLL_INTERVAL_MS = 30_000L
 
         fun LocalDate.toEpochMs(): Long =
             atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
-        fun formatDateLabel(date: LocalDate): String {
-            val dayOfWeek = date.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault())
-            val month = date.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
-            return "$dayOfWeek, $month ${date.dayOfMonth}"
-        }
+        fun formatDateLabel(date: LocalDate): String = StatsDateLabels.full(date)
+
+        /**
+         * A day's screen-time total, worded the same on every day-scoped screen.
+         *
+         * The two screens disagreed: this one read `ms < 60_000` and so printed **"< 1m" for a
+         * day with zero usage**, while App Detail guarded with `> 0` and printed "0s". A day
+         * you genuinely did not touch the phone is not "under a minute", and two screens
+         * describing the same zero differently is exactly the class of oddity being fixed here.
+         */
+        internal fun formatDayTotal(ms: Long, timeTracker: TimeTracker): String =
+            if (ms in 1L until 60_000L) "< 1m" else timeTracker.formatDuration(ms)
+
+        /**
+         * `UsageStatsManager` has no Flow, so a live day has to be polled. A window that has
+         * already ended cannot change, so it emits once and completes — a phone left on a past
+         * day used to keep waking every 30 s to re-read seven identical binder queries.
+         *
+         * Runs on IO: `getDailyScreenTimesForWeek` is seven binder round-trips and this feeds a
+         * `stateIn(viewModelScope)`, i.e. the main thread.
+         */
+        internal fun <T> polled(isLive: Boolean, produce: suspend () -> T): Flow<T> = flow {
+            while (true) {
+                emit(produce())
+                if (!isLive) break
+                delay(POLL_INTERVAL_MS)
+            }
+        }.flowOn(Dispatchers.IO)
     }
 }
