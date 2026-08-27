@@ -229,9 +229,10 @@ fun HomeScreen(
 /**
  * The dashboard's two mini charts: screen time and nudges over the last 7 days.
  *
- * Read-only on purpose — the charts take `onSelectDay = null`, so taps fall through to the
- * card and open the full stats screen rather than starting a day-selection interaction the
- * home screen has nowhere to display.
+ * Read-only on purpose — the charts are given no select-day callback, so they install no tap
+ * handling and taps fall through to the card, opening the full stats screen rather than
+ * starting a day-selection interaction the home screen has nowhere to display.
+ * `ChartSelectionContractTest` pins that.
  */
 @Composable
 private fun WeekAtAGlanceCard(
