@@ -16,6 +16,19 @@ class TimeTracker @Inject constructor() {
         return cal.timeInMillis
     }
 
+    /**
+     * Returns epoch millis for midnight [days] days before the day starting at [dayStartMs].
+     * Calendar day arithmetic, so the result is true local midnight even when a DST
+     * transition falls inside the window (raw `days * 86_400_000` subtraction is off by
+     * an hour across a transition).
+     */
+    fun startOfDayDaysBefore(dayStartMs: Long, days: Int): Long {
+        val cal = Calendar.getInstance(TimeZone.getDefault())
+        cal.timeInMillis = dayStartMs
+        cal.add(Calendar.DAY_OF_YEAR, -days)
+        return cal.timeInMillis
+    }
+
     /** Returns true if usage exceeds the given limit. */
     fun hasExceededLimit(usageMs: Long, limitMinutes: Int): Boolean {
         return usageMs >= limitMinutes.toLong() * 60L * 1000L

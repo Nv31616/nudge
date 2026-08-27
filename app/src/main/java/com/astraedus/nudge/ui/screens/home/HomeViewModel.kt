@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -66,6 +67,12 @@ class HomeViewModel @Inject constructor(
      * same "the label and the numbers disagree" defect as the stats-chart selection bug.
      * `distinctUntilChanged` means the downstream Room queries are still re-subscribed exactly
      * once a day, not every 30 s.
+     *
+     * This is the ONE clock for the whole screen: counts, the week window, the screen-time
+     * poll and the chart builder all consume this value rather than calling
+     * `startOfToday()` themselves, so no two sections of the dashboard can disagree about
+     * which day is "today" around a midnight rollover. `shareIn(replay = 1)` keeps it a
+     * single timer no matter how many downstream chains subscribe.
      */
     private val dayStartFlow = flow {
         while (true) {
@@ -73,6 +80,7 @@ class HomeViewModel @Inject constructor(
             delay(POLL_INTERVAL_MS)
         }
     }.distinctUntilChanged()
+        .shareIn(viewModelScope, SharingStarted.WhileSubscribed(5000), replay = 1)
 
     private val countsFlow = dayStartFlow.flatMapLatest { dayStart ->
         val dayEnd = dayStart + DAY_MS
@@ -91,23 +99,33 @@ class HomeViewModel @Inject constructor(
      * already observe, one extra windowed query — no new storage and no new writes.
      */
     private val weekEventsFlow = dayStartFlow.flatMapLatest { dayStart ->
-        usageRepository.getEventsSince(dayStart - (WEEK_DAYS - 1) * DAY_MS)
+        // Calendar arithmetic, not `6 * DAY_MS`: a DST transition inside the trailing week
+        // would otherwise shift the window start an hour off true local midnight.
+        usageRepository.getEventsSince(timeTracker.startOfDayDaysBefore(dayStart, WEEK_DAYS - 1))
     }
 
     /**
      * `UsageStatsManager` has no Flow, so screen time is polled. On IO: the weekly series is
      * seven binder round-trips and this feeds the main thread via `stateIn`.
+     * Derived from [dayStartFlow] so every reading is bucketed against the same "today"
+     * the rest of the dashboard uses; the snapshot carries that day start along for the
+     * chart builder.
      */
-    private val screenTimeFlow = flow {
-        while (true) {
-            emit(
-                ScreenTimeSnapshot(
-                    hasPermission = screenTimeProvider.hasPermission(),
-                    todayMs = screenTimeProvider.getTotalScreenTimeToday(),
-                    weeklyTotals = screenTimeProvider.getDailyScreenTimesForWeek()
+    private val screenTimeFlow = dayStartFlow.flatMapLatest { dayStart ->
+        flow {
+            while (true) {
+                emit(
+                    ScreenTimeSnapshot(
+                        dayStartMs = dayStart,
+                        hasPermission = screenTimeProvider.hasPermission(),
+                        todayMs = screenTimeProvider.getTotalScreenTime(
+                            dayStart, System.currentTimeMillis()
+                        ),
+                        weeklyTotals = screenTimeProvider.getDailyScreenTimesForWeek(dayStart)
+                    )
                 )
-            )
-            delay(POLL_INTERVAL_MS)
+                delay(POLL_INTERVAL_MS)
+            }
         }
     }.flowOn(Dispatchers.IO)
 
@@ -123,7 +141,7 @@ class HomeViewModel @Inject constructor(
         val charts = homeChartsBuilder.build(
             weeklyTotals = screenTime.weeklyTotals,
             weekEvents = weekEvents,
-            todayStartMs = timeTracker.startOfToday()
+            todayStartMs = screenTime.dayStartMs
         )
         HomeUiState(
             isGlobalEnabled = enabled,
@@ -147,6 +165,7 @@ class HomeViewModel @Inject constructor(
     )
 
     private data class ScreenTimeSnapshot(
+        val dayStartMs: Long,
         val hasPermission: Boolean,
         val todayMs: Long,
         val weeklyTotals: List<Long>
@@ -178,7 +197,7 @@ class HomeViewModel @Inject constructor(
 
     companion object {
         private const val DAY_MS = 24L * 60L * 60L * 1000L
-        private const val WEEK_DAYS = 7L
+        private const val WEEK_DAYS = 7
         private const val POLL_INTERVAL_MS = 30_000L
     }
 }

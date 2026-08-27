@@ -84,4 +84,51 @@ class TimeTrackerTest {
     fun `formatDuration formats 0 as 0s`() {
         assertEquals("0s", timeTracker.formatDuration(0L))
     }
+
+    @Test
+    fun `startOfDayDaysBefore walks back whole days in a fixed zone`() {
+        withDefaultTimeZone("Etc/UTC") {
+            val tracker = TimeTracker()
+            val cal = java.util.Calendar.getInstance()
+            cal.clear()
+            cal.set(2026, java.util.Calendar.AUGUST, 27, 0, 0, 0)
+            val dayStart = cal.timeInMillis
+            assertEquals(
+                dayStart - 6L * 24L * 60L * 60L * 1000L,
+                tracker.startOfDayDaysBefore(dayStart, 6)
+            )
+        }
+    }
+
+    @Test
+    fun `startOfDayDaysBefore lands on local midnight across a DST transition`() {
+        // Australia/Sydney leaves DST on 2026-04-05 (clocks go back; that week has 169 hours).
+        withDefaultTimeZone("Australia/Sydney") {
+            val tracker = TimeTracker()
+            val cal = java.util.Calendar.getInstance()
+            cal.clear()
+            cal.set(2026, java.util.Calendar.APRIL, 8, 0, 0, 0)
+            val dayStart = cal.timeInMillis
+
+            val result = tracker.startOfDayDaysBefore(dayStart, 6)
+
+            // Raw ms subtraction would land at 23:00 the previous local day; calendar
+            // arithmetic must land exactly on local midnight April 2.
+            val expected = java.util.Calendar.getInstance()
+            expected.clear()
+            expected.set(2026, java.util.Calendar.APRIL, 2, 0, 0, 0)
+            assertEquals(expected.timeInMillis, result)
+            assertTrue(result != dayStart - 6L * 24L * 60L * 60L * 1000L)
+        }
+    }
+
+    private fun withDefaultTimeZone(zoneId: String, block: () -> Unit) {
+        val original = java.util.TimeZone.getDefault()
+        try {
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone(zoneId))
+            block()
+        } finally {
+            java.util.TimeZone.setDefault(original)
+        }
+    }
 }
