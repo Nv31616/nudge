@@ -33,6 +33,9 @@ class WeeklyUsage(
 
     val days: Int get() = dayStartsMs.size
 
+    /** The first day of the window. Safe on an empty window, which the screens must not crash on. */
+    val firstDayStartMs: Long get() = dayStartsMs.firstOrNull() ?: 0L
+
     /** The last day of the window — "today" whenever the window is the live one. */
     val lastDayStartMs: Long get() = dayStartsMs.lastOrNull() ?: 0L
 

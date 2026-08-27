@@ -107,8 +107,20 @@ class WeeklyUsageTest {
     }
 
     @Test
-    fun `the last day is the window's anchor`() {
+    fun `the window's own edges are what the screens word it from`() {
+        assertEquals(dayStarts.first(), usage.firstDayStartMs)
         assertEquals(dayStarts.last(), usage.lastDayStartMs)
+    }
+
+    /** The stats screens read both edges every frame; a degenerate window must not crash them. */
+    @Test
+    fun `an empty window has edges rather than throwing`() {
+        val nothing = WeeklyUsage(emptyList(), emptyList())
+
+        assertEquals(0L, nothing.firstDayStartMs)
+        assertEquals(0L, nothing.lastDayStartMs)
+        assertEquals(emptyList<Long>(), nothing.dailyTotals())
+        assertEquals(emptyMap<String, Long>(), nothing.perAppOn(dayStarts[0]))
     }
 
     @Test

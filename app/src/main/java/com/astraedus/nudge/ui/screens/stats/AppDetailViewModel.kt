@@ -13,6 +13,7 @@ import com.astraedus.nudge.domain.usage.WeeklyUsage
 import com.astraedus.nudge.ui.screens.stats.StatsViewModel.Companion.formatDayTotal
 import com.astraedus.nudge.ui.screens.stats.StatsViewModel.Companion.polled
 import com.astraedus.nudge.ui.screens.stats.StatsViewModel.Companion.toEpochMs
+import com.astraedus.nudge.ui.screens.stats.StatsViewModel.Companion.toLocalDate
 import com.astraedus.nudge.ui.screens.stats.charts.DayData
 import com.astraedus.nudge.ui.screens.stats.charts.TrendDay
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -154,10 +155,13 @@ class AppDetailViewModel @Inject constructor(
         val isToday = selection.isSelectedToday(today)
         val dayStartMs = selection.selected.toEpochMs()
         val dayEndMs = timeTracker.startOfDayDaysBefore(dayStartMs, -1)
-        // Labels follow the LOADED window, not the selection: the two are briefly out of step
-        // while a new window loads, and printing the new dates over the old bars is the very
+        // Everything describing the WINDOW is worded from the window actually loaded; everything
+        // describing the DAY comes from the selection. The two are briefly out of step while a new
+        // window loads, and printing the new dates over the old bars is the very
         // chart-disagrees-with-its-numbers defect this screen was fixed for.
         val weekEndStartMs = weeklyUsage.lastDayStartMs
+        val loadedWeekEnd = weekEndStartMs.toLocalDate()
+        val loadedWeekStart = weeklyUsage.firstDayStartMs.toLocalDate()
         val weeklyTotals = weeklyUsage.dailyTotalsFor(packageName)
 
         val appWeekEvents = weekEvents.filter { it.packageName == packageName }
@@ -188,7 +192,7 @@ class AppDetailViewModel @Inject constructor(
             isToday = isToday,
             dateLabel = StatsDateLabels.day(selection.selected, today),
             selectedDayIndex = selection.selectedIndex,
-            weekRangeLabel = StatsDateLabels.range(selection.weekStart, selection.weekEnd, today),
+            weekRangeLabel = StatsDateLabels.range(loadedWeekStart, loadedWeekEnd, today),
             canGoForward = selection.canGoForward(today),
             weekTotalFormatted = timeTracker.formatDuration(weeklyTotals.sum())
         )

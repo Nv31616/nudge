@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import javax.inject.Inject
@@ -173,11 +174,16 @@ class StatsViewModel @Inject constructor(
         val isToday = selection.isSelectedToday(today)
         val dayStartMs = selection.selected.toEpochMs()
         val dayEndMs = timeTracker.startOfDayDaysBefore(dayStartMs, -1)
-        // The window the LOADED series actually covers. `selection` moves the instant an arrow is
-        // tapped while the new window is still in flight, so labelling the bars from the selection
-        // would, for that frame, print new dates over old numbers — the exact defect being fixed.
+        // ONE rule for the whole screen: everything that describes the WINDOW is worded from the
+        // window actually loaded, everything that describes the DAY comes from the selection.
+        // `selection` moves the instant an arrow is tapped while the new window is still in
+        // flight, so wording the window from it would, for that frame, print new dates over old
+        // bars — the same "the label and the numbers disagree" defect, one level up.
         val weekEndStartMs = weeklyUsage.lastDayStartMs
+        val loadedWeekEnd = weekEndStartMs.toLocalDate()
+        val loadedWeekStart = weeklyUsage.firstDayStartMs.toLocalDate()
         val dayPerApp = weeklyUsage.perAppOn(dayStartMs)
+        val weeklyTotals = weeklyUsage.dailyTotals()
 
         val byPackage = dayPerApp.entries.sortedByDescending { it.value }
         val maxMs = byPackage.maxOfOrNull { it.value } ?: 1L
@@ -200,10 +206,7 @@ class StatsViewModel @Inject constructor(
             // The hero total is the sum of the very list under it, on the very bar above it.
             totalFormatted = formatDayTotal(dayPerApp.values.sum(), timeTracker),
             appStats = appStats,
-            weeklyData = statsCalculator.buildWeeklyDataFromTotals(
-                weeklyUsage.dailyTotals(),
-                weekEndStartMs
-            ),
+            weeklyData = statsCalculator.buildWeeklyDataFromTotals(weeklyTotals, weekEndStartMs),
             trendData = statsCalculator.buildTrendData(weekEvents, weekEndStartMs),
             hourlyMs = hourlyMs,
             // Anchored on the window's last day, not the selected one: a streak is a
@@ -214,9 +217,9 @@ class StatsViewModel @Inject constructor(
             isToday = isToday,
             dateLabel = StatsDateLabels.day(selection.selected, today),
             selectedDayIndex = selection.selectedIndex,
-            weekRangeLabel = StatsDateLabels.range(selection.weekStart, selection.weekEnd, today),
+            weekRangeLabel = StatsDateLabels.range(loadedWeekStart, loadedWeekEnd, today),
             canGoForward = selection.canGoForward(today),
-            weekTotalFormatted = timeTracker.formatDuration(weeklyUsage.dailyTotals().sum()),
+            weekTotalFormatted = timeTracker.formatDuration(weeklyTotals.sum()),
             selectedDayBlocked = selectedDayEvents.count { it.wasBlocked },
             selectedDayWalkedAway = selectedDayEvents.count { it.userChangedMind }
         )
@@ -227,6 +230,14 @@ class StatsViewModel @Inject constructor(
 
         fun LocalDate.toEpochMs(): Long =
             atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+        /**
+         * The calendar day a loaded window's boundary falls on. Used to word the window from the
+         * DATA rather than from the selection, so the range in the header and the labels on the
+         * bars beneath it always describe the same seven days.
+         */
+        fun Long.toLocalDate(): LocalDate =
+            Instant.ofEpochMilli(this).atZone(ZoneId.systemDefault()).toLocalDate()
 
         fun formatDateLabel(date: LocalDate): String = StatsDateLabels.full(date)
 
