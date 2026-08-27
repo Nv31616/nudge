@@ -28,6 +28,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.File
 
 /**
  * The security contract of the import path: **an import must not be a way around Strict Mode.**
@@ -190,6 +191,40 @@ class ActiveRulesImportGateTest {
 
         assertEquals(listOf(parsed), writes)
         assertNull(vm.challenge.value)
+    }
+
+    /**
+     * The gate lives in the ViewModel, so it is only as good as the call sites: a SECOND place that
+     * called `execute` would write settings without ever asking whether they weaken protection, and
+     * every test above would still pass. This asserts there is exactly one writer and that it is
+     * the gated one.
+     *
+     * Source-level on purpose, in the same spirit as `BlockOverlayWalkAwayContractTest`: the defect
+     * class is an added call site, which is not a value any unit test can observe.
+     */
+    @Test
+    fun `there is exactly one call site that writes an import, and it consults the gate`() {
+        val mainSources = listOf(File("src/main/java"), File("app/src/main/java"))
+            .firstOrNull { it.exists() }
+            ?: error("main sources not found from working dir ${File("").absolutePath}")
+
+        val writers = mainSources.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .filter { it.readText().contains("importRulesUseCase.execute(") }
+            .map { it.name }
+            .toList()
+
+        assertEquals(
+            "every import write must go through the Strict Mode gate in ActiveRulesViewModel",
+            listOf("ActiveRulesViewModel.kt"),
+            writers
+        )
+        assertTrue(
+            "the writer must ask whether the payload weakens protection",
+            File(mainSources, "com/astraedus/nudge/ui/screens/rules/ActiveRulesViewModel.kt")
+                .readText()
+                .contains("importRulesUseCase.weakensProtection(")
+        )
     }
 
     /** The gate is asked about the file that is actually being confirmed, on every import. */
