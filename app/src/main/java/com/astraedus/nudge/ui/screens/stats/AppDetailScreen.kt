@@ -57,21 +57,18 @@ fun AppDetailScreen(
                 .padding(padding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Date navigation row
             item {
-                DateNavigationRow(
-                    dateLabel = state.dateLabel,
+                DayNavigationHeader(
+                    dayLabel = state.dateLabel,
+                    rangeLabel = state.weekRangeLabel,
+                    canGoForward = state.canGoForward,
                     isToday = state.isToday,
-                    onPreviousDay = { viewModel.goToPreviousDay() },
-                    onNextDay = { viewModel.goToNextDay() },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .padding(top = 4.dp)
+                    onPreviousDay = viewModel::goToPreviousDay,
+                    onNextDay = viewModel::goToNextDay,
+                    onJumpToToday = viewModel::jumpToToday
                 )
             }
 
-            // Screen time for selected day
             item {
                 Card(
                     modifier = Modifier
@@ -88,7 +85,7 @@ fun AppDetailScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            state.dateLabel,
+                            "Screen time · ${state.dateLabel}",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                         )
@@ -98,25 +95,34 @@ fun AppDetailScreen(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
+                        Text(
+                            "${state.weekTotalFormatted} · ${state.weekRangeLabel}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                        )
                     }
                 }
             }
 
-            // This Week chart
             item {
-                DetailSectionCard(title = "This Week") {
+                InsightSection(
+                    title = "Screen time",
+                    subtitle = "${state.weekRangeLabel} · tap a bar to see that day"
+                ) {
                     WeeklyBarChart(
                         days = state.weeklyData,
+                        selectedIndex = state.selectedDayIndex,
+                        onSelectDay = viewModel::selectDay,
                         modifier = Modifier.padding(horizontal = 4.dp)
                     )
                 }
             }
 
-            // Hourly pattern heatmap
             item {
-                val patternLabel = if (state.isToday) "Today's Pattern"
-                    else "${state.dateLabel}'s Pattern"
-                DetailSectionCard(title = patternLabel) {
+                InsightSection(
+                    title = "Hourly pattern",
+                    subtitle = state.dateLabel
+                ) {
                     HourlyHeatmap(
                         hourlyMs = state.hourlyMs,
                         modifier = Modifier.padding(horizontal = 4.dp)
@@ -124,43 +130,53 @@ fun AppDetailScreen(
                 }
             }
 
-            // Nudge Effectiveness trend for this app
             item {
-                DetailSectionCard(title = "Nudge Effectiveness") {
+                InsightSection(
+                    title = "Nudge effectiveness",
+                    subtitle = "${state.weekRangeLabel} · tap a bar to see that day"
+                ) {
                     BlockedTrendChart(
                         days = state.trendData,
+                        selectedIndex = state.selectedDayIndex,
+                        onSelectDay = viewModel::selectDay,
                         modifier = Modifier.padding(horizontal = 4.dp)
                     )
                 }
             }
 
-            // Nudge Activity stats
             item {
-                val dayLabel = if (state.isToday) "Today" else state.dateLabel
-                DetailSectionCard(title = "Nudge Activity") {
+                InsightSection(title = "Nudge activity") {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
-                            StatItem(label = "Blocked $dayLabel", value = "${state.blockedCountToday}")
-                            StatItem(label = "Walked Away $dayLabel", value = "${state.walkedAwayCountToday}")
+                            StatItem(
+                                label = "Blocked · ${state.dateLabel}",
+                                value = "${state.blockedCountToday}"
+                            )
+                            StatItem(
+                                label = "Walked away · ${state.dateLabel}",
+                                value = "${state.walkedAwayCountToday}"
+                            )
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
-                            StatItem(label = "Blocked All Time", value = "${state.blockedCountTotal}")
-                            StatItem(label = "Walked Away All Time", value = "${state.walkedAwayCountTotal}")
+                            StatItem(label = "Blocked · all time", value = "${state.blockedCountTotal}")
+                            StatItem(
+                                label = "Walked away · all time",
+                                value = "${state.walkedAwayCountTotal}"
+                            )
                         }
                     }
                 }
             }
 
-            // Block Mode Breakdown (only show if there's data)
             if (state.blockModeBreakdown.isNotEmpty()) {
                 item {
-                    DetailSectionCard(title = "Block Mode Breakdown") {
+                    InsightSection(title = "Block mode breakdown", subtitle = "All time") {
                         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             state.blockModeBreakdown.forEach { (mode, count) ->
                                 Row(
@@ -186,33 +202,6 @@ fun AppDetailScreen(
             }
 
             item { Spacer(Modifier.height(16.dp)) }
-        }
-    }
-}
-
-@Composable
-private fun DetailSectionCard(
-    title: String,
-    content: @Composable () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
-            content()
         }
     }
 }

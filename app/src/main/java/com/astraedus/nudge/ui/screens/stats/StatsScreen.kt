@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -20,6 +21,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.Today
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -72,21 +76,18 @@ fun StatsScreen(
                 .padding(padding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Date navigation row
             item {
-                DateNavigationRow(
-                    dateLabel = state.dateLabel,
+                DayNavigationHeader(
+                    dayLabel = state.dateLabel,
+                    rangeLabel = state.weekRangeLabel,
+                    canGoForward = state.canGoForward,
                     isToday = state.isToday,
-                    onPreviousDay = { viewModel.goToPreviousDay() },
-                    onNextDay = { viewModel.goToNextDay() },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                        .padding(top = 4.dp)
+                    onPreviousDay = viewModel::goToPreviousDay,
+                    onNextDay = viewModel::goToNextDay,
+                    onJumpToToday = viewModel::jumpToToday
                 )
             }
 
-            // Today's total card
             item {
                 val cardModifier = Modifier
                     .fillMaxWidth()
@@ -116,7 +117,7 @@ fun StatsScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            state.dateLabel,
+                            "Screen time · ${state.dateLabel}",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                         )
@@ -126,7 +127,13 @@ fun StatsScreen(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
-                        if (!state.hasUsagePermission) {
+                        if (state.hasUsagePermission) {
+                            Text(
+                                "${state.weekTotalFormatted} · ${state.weekRangeLabel}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                            )
+                        } else {
                             Text(
                                 "Tap to enable usage access",
                                 style = MaterialTheme.typography.labelSmall,
@@ -137,7 +144,6 @@ fun StatsScreen(
                 }
             }
 
-            // Streak counter
             item {
                 StreakCounter(
                     streakDays = state.streakDays,
@@ -147,31 +153,45 @@ fun StatsScreen(
                 )
             }
 
-            // This Week bar chart
             item {
-                SectionCard(title = "This Week") {
+                InsightSection(
+                    title = "Screen time",
+                    subtitle = "${state.weekRangeLabel} · tap a bar to see that day"
+                ) {
                     WeeklyBarChart(
                         days = state.weeklyData,
+                        selectedIndex = state.selectedDayIndex,
+                        onSelectDay = viewModel::selectDay,
                         modifier = Modifier.padding(horizontal = 4.dp)
                     )
                 }
             }
 
-            // Nudge Effectiveness (blocked vs walked away)
             item {
-                SectionCard(title = "Nudge Effectiveness") {
+                InsightSection(
+                    title = "Nudge effectiveness",
+                    subtitle = "${state.weekRangeLabel} · tap a bar to see that day"
+                ) {
                     BlockedTrendChart(
                         days = state.trendData,
+                        selectedIndex = state.selectedDayIndex,
+                        onSelectDay = viewModel::selectDay,
                         modifier = Modifier.padding(horizontal = 4.dp)
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    SelectedDayNudgeRow(
+                        dayLabel = state.dateLabel,
+                        blocked = state.selectedDayBlocked,
+                        walkedAway = state.selectedDayWalkedAway
                     )
                 }
             }
 
-            // Hourly pattern heatmap
             item {
-                val patternLabel = if (state.isToday) "Today's Pattern"
-                    else "${state.dateLabel}'s Pattern"
-                SectionCard(title = patternLabel) {
+                InsightSection(
+                    title = "Hourly pattern",
+                    subtitle = state.dateLabel
+                ) {
                     HourlyHeatmap(
                         hourlyMs = state.hourlyMs,
                         modifier = Modifier.padding(horizontal = 4.dp)
@@ -179,11 +199,10 @@ fun StatsScreen(
                 }
             }
 
-            // Per-app usage section header
             if (state.appStats.isNotEmpty()) {
                 item {
                     Text(
-                        "App Usage",
+                        "App usage · ${state.dateLabel}",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -208,7 +227,7 @@ fun StatsScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            "No usage data yet",
+                            "No app usage recorded · ${state.dateLabel}",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -222,75 +241,126 @@ fun StatsScreen(
 }
 
 /**
- * Reusable date navigation row with back/forward arrows and a centered date label.
- * The forward arrow is disabled (greyed out) when viewing the latest available date.
+ * The day header for every day-scoped stats screen.
+ *
+ * It carries three things the old arrows-only row did not: which day is selected in plain
+ * words, which 7-day window the charts below are drawing, and — only when it can do something —
+ * a way back to today. Shared by [StatsScreen] and [AppDetailScreen] so the two can never
+ * disagree about how a day is announced.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DateNavigationRow(
-    dateLabel: String,
+fun DayNavigationHeader(
+    dayLabel: String,
+    rangeLabel: String,
+    canGoForward: Boolean,
     isToday: Boolean,
     onPreviousDay: () -> Unit,
     onNextDay: () -> Unit,
+    onJumpToToday: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(top = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        IconButton(onClick = onPreviousDay) {
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                contentDescription = "Previous day",
-                tint = MaterialTheme.colorScheme.onSurface
-            )
-        }
-        Text(
-            dateLabel,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        IconButton(
-            onClick = onNextDay,
-            enabled = !isToday
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = "Next day",
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.alpha(if (isToday) 0.3f else 1f)
+            IconButton(onClick = onPreviousDay) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                    contentDescription = "Previous day",
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    dayLabel,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    rangeLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            IconButton(
+                onClick = onNextDay,
+                enabled = canGoForward
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "Next day",
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.alpha(if (canGoForward) 1f else 0.3f)
+                )
+            }
+        }
+
+        // Only rendered when it has somewhere to go, so its presence IS the signal that the
+        // screen is not showing today.
+        if (!isToday) {
+            AssistChip(
+                onClick = onJumpToToday,
+                label = { Text("Back to today") },
+                leadingIcon = {
+                    Icon(
+                        Icons.Outlined.Today,
+                        contentDescription = null,
+                        modifier = Modifier.size(AssistChipDefaults.IconSize)
+                    )
+                },
+                modifier = Modifier.padding(top = 4.dp)
             )
         }
     }
 }
 
+/**
+ * The selected day's nudge counts, sitting directly under the trend chart.
+ *
+ * This is the pair of numbers the reported bug was about: tapping a bar highlighted it and
+ * these did not move. They are rendered here, next to the chart, precisely so the link is
+ * visible without scrolling.
+ */
 @Composable
-private fun SectionCard(
-    title: String,
-    content: @Composable () -> Unit
+private fun SelectedDayNudgeRow(
+    dayLabel: String,
+    blocked: Int,
+    walkedAway: Int,
+    modifier: Modifier = Modifier
 ) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceEvenly
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
-        ) {
-            Text(
-                title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(bottom = 12.dp)
-            )
-            content()
-        }
+        DayStat(label = "Blocked · $dayLabel", value = blocked.toString())
+        DayStat(label = "Walked away · $dayLabel", value = walkedAway.toString())
+    }
+}
+
+@Composable
+private fun DayStat(label: String, value: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            value,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

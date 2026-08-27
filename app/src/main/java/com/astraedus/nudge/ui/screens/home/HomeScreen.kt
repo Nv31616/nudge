@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Block
@@ -43,6 +44,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.astraedus.nudge.ui.components.StrictModeChallengeHost
+import com.astraedus.nudge.ui.screens.stats.charts.BlockedTrendChart
+import com.astraedus.nudge.ui.screens.stats.charts.WeeklyBarChart
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -107,6 +110,8 @@ fun HomeScreen(
                     value = if (state.hasUsagePermission) state.todayTotalUsageFormatted else "--",
                     subtitle = if (!state.hasUsagePermission) "Tap to enable" else null,
                     modifier = Modifier.weight(1f),
+                    // Granted, this card used to be inert — the one tile showing a number the
+                    // stats screen exists to explain, and tapping it did nothing.
                     onClick = if (!state.hasUsagePermission) {
                         {
                             context.startActivity(
@@ -115,7 +120,7 @@ fun HomeScreen(
                                 }
                             )
                         }
-                    } else null
+                    } else onNavigateToStats
                 )
                 StatCard(
                     icon = Icons.Outlined.Shield,
@@ -125,6 +130,13 @@ fun HomeScreen(
                     onClick = onNavigateToActiveRules
                 )
             }
+
+            WeekAtAGlanceCard(
+                charts = state.charts,
+                weekTotalFormatted = state.weekTotalFormatted,
+                hasUsagePermission = state.hasUsagePermission,
+                onClick = onNavigateToStats
+            )
 
             Text(
                 "Today",
@@ -210,6 +222,96 @@ fun HomeScreen(
             )
 
             Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+/**
+ * The dashboard's two mini charts: screen time and nudges over the last 7 days.
+ *
+ * Read-only on purpose — the charts take `onSelectDay = null`, so taps fall through to the
+ * card and open the full stats screen rather than starting a day-selection interaction the
+ * home screen has nowhere to display.
+ */
+@Composable
+private fun WeekAtAGlanceCard(
+    charts: HomeCharts,
+    weekTotalFormatted: String,
+    hasUsagePermission: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Last 7 days",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    if (hasUsagePermission) weekTotalFormatted else "--",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = "Open usage stats",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (charts.isEmpty) {
+                Text(
+                    "Your screen time and nudges will chart here once there's a day of data.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+                return@Column
+            }
+
+            Spacer(Modifier.height(12.dp))
+            WeeklyBarChart(
+                days = charts.weeklyScreenTime,
+                chartHeight = 64.dp
+            )
+
+            Spacer(Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Nudges",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "${charts.weekBlocked} blocked · ${charts.weekWalkedAway} walked away",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            BlockedTrendChart(
+                days = charts.weeklyTrend,
+                chartHeight = 56.dp,
+                showLegend = false
+            )
         }
     }
 }

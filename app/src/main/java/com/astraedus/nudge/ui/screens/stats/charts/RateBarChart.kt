@@ -95,26 +95,26 @@ fun RateBarChart(
                 .height(barHeight)
                 .pointerInput(bars, spacing) {
                     detectTapGestures { offset ->
-                        val barCount = bars.size
-                        val spacingPx = spacing.toPx()
-                        val totalSpacing = (barCount - 1) * spacingPx
-                        val barWidth = (size.width - totalSpacing) / barCount
-                        val step = barWidth + spacingPx
-                        val index = (offset.x / step).toInt().coerceIn(0, bars.lastIndex)
-                        selectedIndex = if (selectedIndex == index) null else index
+                        val index = ChartGeometry.barIndexAt(
+                            x = offset.x,
+                            totalWidth = size.width.toFloat(),
+                            barCount = bars.size,
+                            spacing = spacing.toPx()
+                        )
+                        if (index >= 0) {
+                            selectedIndex = if (selectedIndex == index) null else index
+                        }
                     }
                 }
         ) {
-            val barCount = bars.size
             val spacingPx = spacing.toPx()
-            val totalSpacing = (barCount - 1) * spacingPx
-            val barWidth = (size.width - totalSpacing) / barCount
+            val barWidth = ChartGeometry.barWidth(size.width, bars.size, spacingPx)
 
             bars.forEachIndexed { index, bar ->
                 val clampedFraction = bar.fraction.coerceIn(0f, 1f)
                 if (clampedFraction <= 0f) return@forEachIndexed
 
-                val x = index * (barWidth + spacingPx)
+                val x = ChartGeometry.barLeft(index, size.width, bars.size, spacingPx)
                 val barPixelHeight = (size.height * clampedFraction).coerceAtLeast(3.dp.toPx())
                 val baseAlpha = 0.35f + 0.65f * bar.confidence.coerceIn(0f, 1f)
                 val alpha = if (selectedIndex != null && selectedIndex != index) {
