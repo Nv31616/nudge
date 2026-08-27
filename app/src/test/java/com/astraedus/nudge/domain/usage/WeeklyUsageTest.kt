@@ -16,7 +16,11 @@ class WeeklyUsageTest {
     private val chrome = "com.android.chrome"
     private val youtube = "com.google.android.youtube"
 
-    private val dayStarts = (0L until 7L).map { 1_000_000L + it * 100L }
+    private val dayMs = 24L * 60L * 60L * 1000L
+    private val hourMs = 60L * 60L * 1000L
+
+    /** Realistic spacing, because day lookup is distance-based. */
+    private val dayStarts = (0L until 7L).map { 1_700_000_000_000L + it * dayMs }
 
     private val usage = WeeklyUsage(
         dayStartsMs = dayStarts,
@@ -70,10 +74,30 @@ class WeeklyUsageTest {
      */
     @Test
     fun `a day outside the loaded window reads empty, never a neighbour`() {
-        assertEquals(emptyMap<String, Long>(), usage.perAppOn(dayStarts.first() - 100L))
-        assertEquals(emptyMap<String, Long>(), usage.perAppOn(dayStarts.last() + 100L))
-        assertEquals(emptyMap<String, Long>(), usage.perAppOn(dayStarts[2] + 1L))
-        assertEquals(0L, usage.totalOn(dayStarts.last() + 100L))
+        assertEquals(emptyMap<String, Long>(), usage.perAppOn(dayStarts.first() - dayMs))
+        assertEquals(emptyMap<String, Long>(), usage.perAppOn(dayStarts.last() + dayMs))
+        assertEquals(0L, usage.totalOn(dayStarts.last() + dayMs))
+    }
+
+    /**
+     * The caller's day start comes from `java.time`, these come from `Calendar`, and in a zone
+     * whose DST transition lands at midnight the two can normalise a non-existent local midnight
+     * differently. An exact-match lookup that missed would blank a real day — the exact symptom
+     * this whole change exists to remove — so the day is matched to the nearest start.
+     */
+    @Test
+    fun `a day start off by a DST normalisation hour still finds its day`() {
+        assertEquals(usage.perAppOn(dayStarts[2]), usage.perAppOn(dayStarts[2] + hourMs))
+        assertEquals(usage.perAppOn(dayStarts[2]), usage.perAppOn(dayStarts[2] - hourMs))
+        assertEquals(25L, usage.totalOn(dayStarts[2] + hourMs))
+    }
+
+    /** ...and the slack must never be wide enough to reach the day next door. */
+    @Test
+    fun `the tolerance cannot reach a neighbouring day`() {
+        assertEquals(usage.perAppOn(dayStarts[1]), usage.perAppOn(dayStarts[2] - dayMs))
+        assertEquals(10L, usage.totalOn(dayStarts[2] - dayMs))
+        assertEquals(7L, usage.totalOn(dayStarts[2] + 2 * dayMs))
     }
 
     @Test

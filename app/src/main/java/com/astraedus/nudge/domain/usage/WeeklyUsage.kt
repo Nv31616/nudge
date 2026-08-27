@@ -46,8 +46,28 @@ class WeeklyUsage(
      * Empty is the deliberate answer for a day we do not hold: showing the neighbouring day's
      * numbers under this day's heading is precisely the "the chart and the numbers describe
      * different days" defect this type exists to make impossible.
+     *
+     * Matched to the NEAREST day start, within [SAME_DAY_TOLERANCE_MS], rather than by equality.
+     * The caller's day start comes from `java.time` (`LocalDate.atStartOfDay`) while these come
+     * from `Calendar`, and in the handful of zones whose DST transition happens AT midnight the
+     * two normalise a non-existent local midnight to the same instant only by convention. An
+     * exact match that missed would blank a real day — the very symptom being fixed — while days
+     * here are at least 23 hours apart, so half a day of slack cannot reach a neighbour.
      */
-    fun perAppOn(dayStartMs: Long): Map<String, Long> = perApp(dayStartsMs.indexOf(dayStartMs))
+    fun perAppOn(dayStartMs: Long): Map<String, Long> = perApp(indexOfDay(dayStartMs))
+
+    private fun indexOfDay(dayStartMs: Long): Int {
+        var nearest = -1
+        var nearestDistance = Long.MAX_VALUE
+        dayStartsMs.forEachIndexed { index, start ->
+            val distance = kotlin.math.abs(start - dayStartMs)
+            if (distance < nearestDistance) {
+                nearestDistance = distance
+                nearest = index
+            }
+        }
+        return if (nearestDistance <= SAME_DAY_TOLERANCE_MS) nearest else -1
+    }
 
     /** Total across all apps on the day starting at [dayStartMs]. */
     fun totalOn(dayStartMs: Long): Long = perAppOn(dayStartMs).values.sum()
@@ -60,6 +80,13 @@ class WeeklyUsage(
         perDayPerApp.map { day -> day[packageName] ?: 0L }
 
     companion object {
+        /**
+         * How far a requested day start may sit from a real one and still mean the same day.
+         * Half a day: enough to absorb a DST normalisation hour, far short of the >= 23 hours
+         * that separate two days.
+         */
+        private const val SAME_DAY_TOLERANCE_MS = 12L * 60L * 60L * 1000L
+
         /** A window with the right shape and no data: no permission, no events, or a future window. */
         fun empty(dayStartsMs: List<Long>): WeeklyUsage =
             WeeklyUsage(dayStartsMs, dayStartsMs.map { emptyMap() })
