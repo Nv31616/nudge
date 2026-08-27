@@ -10,6 +10,7 @@ import com.astraedus.nudge.data.repository.UsageRepository
 import com.astraedus.nudge.domain.engine.TimeTracker
 import com.astraedus.nudge.domain.lock.ChallengeState
 import com.astraedus.nudge.ui.lock.StrictModeGate
+import com.astraedus.nudge.ui.screens.stats.StatsViewModel.Companion.formatDayTotal
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -126,11 +127,7 @@ class HomeViewModel @Inject constructor(
         )
         HomeUiState(
             isGlobalEnabled = enabled,
-            todayTotalUsageFormatted = if (screenTime.hasPermission && screenTime.todayMs < 60_000L) {
-                "< 1m"
-            } else {
-                timeTracker.formatDuration(screenTime.todayMs)
-            },
+            todayTotalUsageFormatted = formatDayTotal(screenTime.todayMs, timeTracker),
             activeRuleCount = activeRuleCount,
             blockedCountToday = counts.blockedToday,
             changedMindCountToday = counts.changedMindToday,

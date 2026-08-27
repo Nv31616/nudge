@@ -9,6 +9,7 @@ import com.astraedus.nudge.data.repository.InstalledAppsRepository
 import com.astraedus.nudge.data.repository.ScreenTimeProvider
 import com.astraedus.nudge.data.repository.UsageRepository
 import com.astraedus.nudge.domain.engine.TimeTracker
+import com.astraedus.nudge.ui.screens.stats.StatsViewModel.Companion.formatDayTotal
 import com.astraedus.nudge.ui.screens.stats.StatsViewModel.Companion.polled
 import com.astraedus.nudge.ui.screens.stats.StatsViewModel.Companion.toEpochMs
 import com.astraedus.nudge.ui.screens.stats.charts.DayData
@@ -156,12 +157,6 @@ class AppDetailViewModel @Inject constructor(
         val appAllEvents = allEvents.filter { it.packageName == packageName }
         val selectedDayEvents = appWeekEvents.filter { it.timestamp in dayStartMs until dayEndMs }
 
-        val todayFormatted = if (dayScreenTime.dayMs in 1L until 60_000L) {
-            "< 1m"
-        } else {
-            timeTracker.formatDuration(dayScreenTime.dayMs)
-        }
-
         val modeBreakdown = appAllEvents
             .filter { it.wasBlocked && it.blockMode != null }
             .groupBy { it.blockMode!! }
@@ -170,7 +165,7 @@ class AppDetailViewModel @Inject constructor(
         return AppDetailUiState(
             packageName = packageName,
             appName = appName(),
-            todayFormatted = todayFormatted,
+            todayFormatted = formatDayTotal(dayScreenTime.dayMs, timeTracker),
             weeklyData = statsCalculator.buildWeeklyDataFromTotals(weeklyTotals, weekEndStartMs),
             hourlyMs = dayScreenTime.hourlyMs,
             trendData = statsCalculator.buildAppTrendData(weekEvents, packageName, weekEndStartMs),

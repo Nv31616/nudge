@@ -182,7 +182,7 @@ class StatsViewModel @Inject constructor(
         val selectedDayEvents = weekEvents.filter { it.timestamp in dayStartMs until dayEndMs }
 
         return StatsUiState(
-            totalFormatted = formatTotal(dayScreenTime.totalMs, hasPermission),
+            totalFormatted = formatDayTotal(dayScreenTime.totalMs, timeTracker),
             appStats = appStats,
             weeklyData = statsCalculator.buildWeeklyDataFromTotals(weeklyTotals, weekEndStartMs),
             trendData = statsCalculator.buildTrendData(weekEvents, weekEndStartMs),
@@ -203,9 +203,6 @@ class StatsViewModel @Inject constructor(
         )
     }
 
-    private fun formatTotal(ms: Long, hasPermission: Boolean): String =
-        if (hasPermission && ms < 60_000L) "< 1m" else timeTracker.formatDuration(ms)
-
     private data class DayScreenTime(
         val totalMs: Long,
         val hourlyMs: List<Long>,
@@ -220,6 +217,17 @@ class StatsViewModel @Inject constructor(
             atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
         fun formatDateLabel(date: LocalDate): String = StatsDateLabels.full(date)
+
+        /**
+         * A day's screen-time total, worded the same on every day-scoped screen.
+         *
+         * The two screens disagreed: this one read `ms < 60_000` and so printed **"< 1m" for a
+         * day with zero usage**, while App Detail guarded with `> 0` and printed "0s". A day
+         * you genuinely did not touch the phone is not "under a minute", and two screens
+         * describing the same zero differently is exactly the class of oddity being fixed here.
+         */
+        internal fun formatDayTotal(ms: Long, timeTracker: TimeTracker): String =
+            if (ms in 1L until 60_000L) "< 1m" else timeTracker.formatDuration(ms)
 
         /**
          * `UsageStatsManager` has no Flow, so a live day has to be polled. A window that has
