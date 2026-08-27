@@ -3,6 +3,7 @@ package com.astraedus.nudge.ui.screens.rules
 import com.astraedus.nudge.data.export.ExportedGroup
 import com.astraedus.nudge.data.export.ExportedHistoryEvent
 import com.astraedus.nudge.data.export.ExportedRule
+import com.astraedus.nudge.data.export.ExportedSettings
 import com.astraedus.nudge.data.export.ImportResult
 import com.astraedus.nudge.domain.usecase.ImportOutcome
 import com.astraedus.nudge.domain.usecase.ImportPreview
@@ -250,5 +251,88 @@ class ImportMessagesTest {
         assertTrue(message.contains("History events restored: 0"))
         assertTrue(message.contains("History already present: 158"))
         assertFalse(message.contains("could not be read"))
+    }
+
+    // --- Settings ----------------------------------------------------------------------------
+
+    /**
+     * Settings are the one payload that REPLACES what is already on the device -- rules and history
+     * only ever add. So the preview has to say so before anything is written, not after.
+     */
+    @Test
+    fun `preview warns that settings will replace this device's`() {
+        val message = buildImportPreviewMessage(
+            preview(
+                ImportResult(
+                    rules = listOf(rule("com.app1")),
+                    groups = emptyList(),
+                    version = 1,
+                    settings = ExportedSettings(strictModeEnabled = true)
+                )
+            )
+        )
+
+        assertTrue(message.contains("app settings"))
+        assertTrue(message.contains("replacing this device's"))
+    }
+
+    /** A backup from before settings existed must read EXACTLY as it always did. */
+    @Test
+    fun `preview of a file without settings never mentions them`() {
+        val message = buildImportPreviewMessage(
+            preview(ImportResult(rules = listOf(rule("com.app1")), groups = emptyList(), version = 1))
+        )
+
+        assertFalse(message.lowercase().contains("setting"))
+    }
+
+    @Test
+    fun `preview reports unreadable settings separately from rules and history`() {
+        val message = buildImportPreviewMessage(
+            preview(
+                ImportResult(
+                    rules = listOf(rule("com.app1")),
+                    groups = emptyList(),
+                    version = 1,
+                    invalidCount = 1,
+                    invalidReasons = listOf("Rule 2: Unknown block mode: TELEPORT"),
+                    invalidHistoryCount = 2,
+                    invalidHistoryReasons = listOf("History event 3: \"timestamp\" is not a number"),
+                    settings = ExportedSettings(strictModeEnabled = true),
+                    invalidSettingsCount = 1,
+                    invalidSettingsReasons = listOf("Setting \"contentFilterMode\": unknown block mode: TELEPORT")
+                )
+            )
+        )
+
+        assertTrue(message.contains("1 entry could not be read"))
+        assertTrue(message.contains("2 history events could not be read"))
+        assertTrue(message.contains("1 setting could not be read"))
+        assertTrue(message.contains("contentFilterMode"))
+    }
+
+    @Test
+    fun `outcome confirms settings were restored`() {
+        val message = buildImportOutcomeMessage(
+            ImportOutcome(
+                importedCount = 2,
+                duplicateCount = 0,
+                groupsCreated = 0,
+                settingsApplied = true,
+                settingsInvalidCount = 2
+            )
+        )
+
+        assertTrue(message.contains("App settings restored"))
+        assertTrue(message.contains("Settings that could not be read: 2"))
+    }
+
+    @Test
+    fun `outcome of a file without settings never mentions them`() {
+        val message = buildImportOutcomeMessage(
+            ImportOutcome(importedCount = 3, duplicateCount = 0, groupsCreated = 0)
+        )
+
+        assertFalse(message.lowercase().contains("setting"))
     }
 }

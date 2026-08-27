@@ -8,8 +8,10 @@ import com.astraedus.nudge.data.export.ExportedRule
 import com.astraedus.nudge.data.export.HistoryMerge
 import com.astraedus.nudge.data.export.ImportResult
 import com.astraedus.nudge.data.export.RuleExporter
+import com.astraedus.nudge.data.preferences.NudgePreferences
 import com.astraedus.nudge.data.repository.BlockRuleRepository
 import com.astraedus.nudge.data.repository.UsageRepository
+import com.astraedus.nudge.domain.lock.ImportedSettingsWeakening
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.withContext
@@ -35,6 +37,10 @@ data class ImportOutcome(
     val historyDuplicateCount: Int = 0,
     /** History events in the file that could not be read at all. */
     val historyInvalidCount: Int = 0,
+    /** True when the file carried app settings and they were written to this device. */
+    val settingsApplied: Boolean = false,
+    /** Individual settings in the file that could not be read and were left out. */
+    val settingsInvalidCount: Int = 0,
     val error: String? = null
 )
 
@@ -52,8 +58,26 @@ data class ImportPreview(
 class ImportRulesUseCase @Inject constructor(
     private val repository: BlockRuleRepository,
     private val usageRepository: UsageRepository,
+    private val preferences: NudgePreferences,
     private val exporter: RuleExporter
 ) {
+
+    /**
+     * Whether applying [result]'s settings would REDUCE this device's protection — the question the
+     * caller must ask before writing anything, because an import that weakens protection has to
+     * pass the Strict Mode unlock challenge exactly like every other weakening action.
+     *
+     * An export file is plain, hand-editable JSON. Without this gate, `"strictModeEnabled": false`
+     * typed into a text editor would be a one-tap way out of the commitment lock.
+     *
+     * Reads the LIVE preferences rather than anything captured at preview time, for the same reason
+     * [execute] re-derives the new-history count instead of trusting the preview's: the user may
+     * have changed a setting between seeing the dialog and confirming it.
+     */
+    suspend fun weakensProtection(result: ImportResult): Boolean {
+        val incoming = result.settings ?: return false
+        return ImportedSettingsWeakening.isWeakening(preferences.exportableSettings(), incoming)
+    }
 
     /**
      * Parses and validates JSON without inserting, and asks the DB how much of the file's history
@@ -73,8 +97,12 @@ class ImportRulesUseCase @Inject constructor(
      * - Creates groups that don't exist yet (by name).
      * - Skips duplicate rules (same packageName + mode + schedule).
      * - Assigns new IDs to all imported rules.
+     * - Applies the file's app settings, if it carries any, in ONE transaction.
      * - MERGES usage history, skipping events already present (see [HistoryMerge]).
      * - Carries forward the entries the parser had to skip, so the UI can report them.
+     *
+     * The CALLER is responsible for having passed [weakensProtection] through the Strict Mode gate
+     * first: this method writes.
      */
     suspend fun execute(result: ImportResult): ImportOutcome {
         if (result.error != null) {
@@ -85,6 +113,7 @@ class ImportRulesUseCase @Inject constructor(
                 invalidCount = result.invalidCount,
                 invalidReasons = result.invalidReasons,
                 historyInvalidCount = result.invalidHistoryCount,
+                settingsInvalidCount = result.invalidSettingsCount,
                 error = result.error
             )
         }
@@ -152,7 +181,16 @@ class ImportRulesUseCase @Inject constructor(
             imported++
         }
 
-        // Step 4: Merge usage history. Deliberately last -- rules are what protect the user, and a
+        // Step 4: Apply the file's app settings, if it carries any. After the rules (which protect
+        // the user) and before history (which only feeds statistics). All-or-nothing: one DataStore
+        // transaction writes every carried key or none -- see [NudgePreferences.applyImportedSettings].
+        //
+        // Any weakening this payload represents was gated BEFORE we got here (see
+        // [weakensProtection]); by this point the user has either not been weakening anything or has
+        // already typed the unlock challenge.
+        result.settings?.let { preferences.applyImportedSettings(it) }
+
+        // Step 5: Merge usage history. Deliberately last -- rules are what protect the user, and a
         // history restore must never be able to stand between them and their rules.
         val fresh = newHistoryEvents(result.history)
         if (fresh.isNotEmpty()) {
@@ -169,7 +207,9 @@ class ImportRulesUseCase @Inject constructor(
             invalidReasons = result.invalidReasons,
             historyImportedCount = fresh.size,
             historyDuplicateCount = result.history.size - fresh.size,
-            historyInvalidCount = result.invalidHistoryCount
+            historyInvalidCount = result.invalidHistoryCount,
+            settingsApplied = result.settings != null,
+            settingsInvalidCount = result.invalidSettingsCount
         )
     }
 

@@ -4,6 +4,7 @@ import com.astraedus.nudge.data.db.entity.AppGroup
 import com.astraedus.nudge.data.db.entity.AppGroupMember
 import com.astraedus.nudge.data.db.entity.BlockRule
 import com.astraedus.nudge.data.db.entity.UsageEvent
+import com.astraedus.nudge.domain.lock.StrictModeChallenge
 import com.astraedus.nudge.domain.model.BlockMode
 import org.json.JSONArray
 import org.json.JSONException
@@ -39,7 +40,20 @@ data class ImportResult(
      */
     val invalidHistoryCount: Int = 0,
     /** Reason per skipped history entry ("History event 3: ..."), capped like [invalidReasons]. */
-    val invalidHistoryReasons: List<String> = emptyList()
+    val invalidHistoryReasons: List<String> = emptyList(),
+    /**
+     * App settings carried by the file, or null when it carries none (every backup written before
+     * settings existed, and any file whose `settings` object was empty).
+     */
+    val settings: ExportedSettings? = null,
+    /**
+     * Individual settings that could not be read and were left out. Counted separately again, for
+     * the same reason history is: dropping one setting is not dropping a rule, and must not read
+     * like one.
+     */
+    val invalidSettingsCount: Int = 0,
+    /** Reason per skipped setting (`Setting "contentFilterMode": ...`), capped like [invalidReasons]. */
+    val invalidSettingsReasons: List<String> = emptyList()
 )
 
 @Singleton
@@ -83,7 +97,8 @@ class RuleExporter @Inject constructor() {
         rules: List<BlockRule>,
         groups: List<AppGroup>,
         groupMembers: Map<Long, List<AppGroupMember>>,
-        history: List<UsageEvent> = emptyList()
+        history: List<UsageEvent> = emptyList(),
+        settings: ExportedSettings? = null
     ): String {
         val groupIdToName = groups.associateBy({ it.id }, { it.name })
 
@@ -118,7 +133,8 @@ class RuleExporter @Inject constructor() {
         val export = NudgeExport(
             rules = exportedRules,
             groups = exportedGroups,
-            history = history.map(HistoryMerge::toExported)
+            history = history.map(HistoryMerge::toExported),
+            settings = settings?.takeIf { !it.isEmpty }
         )
 
         return serializeToJson(export)
@@ -182,6 +198,15 @@ class RuleExporter @Inject constructor() {
                 if (historyReasons.size < MAX_COLLECTED_REASONS) historyReasons.add(reason)
             }
 
+            // Settings skips get their own counter for the same reason history does: losing one
+            // toggle out of a backup is not losing a rule, and must not be reported as one.
+            var invalidSettingsCount = 0
+            val settingsReasons = mutableListOf<String>()
+            val onSettingSkip: (String) -> Unit = { reason ->
+                invalidSettingsCount++
+                if (settingsReasons.size < MAX_COLLECTED_REASONS) settingsReasons.add(reason)
+            }
+
             val rules = parseEach(root.arrayOrEmpty("rules"), "Rule", onSkip, ::parseRule)
             val groups = parseEach(root.arrayOrEmpty("groups"), "Group", onSkip, ::parseGroup)
             val history = parseEach(
@@ -190,19 +215,22 @@ class RuleExporter @Inject constructor() {
                 onHistorySkip,
                 ::parseHistoryEvent
             )
+            val settings = parseSettings(root.objectOrNull("settings"), onSettingSkip)
 
             // Nothing survived. Skipping every entry is not a successful import of zero rules --
             // report it as a failure so the user sees why instead of a silent "Imported: 0".
-            // History counts as something surviving: a file whose rules are all unreadable but
-            // whose history restores cleanly still did something for the user.
-            val nothingImportable = rules.isEmpty() && groups.isEmpty() && history.isEmpty()
-            val error = if (nothingImportable && invalidCount + invalidHistoryCount > 0) {
-                allInvalidMessage(invalidCount + invalidHistoryCount, reasons + historyReasons)
+            // History and settings count as something surviving: a file whose rules are all
+            // unreadable but whose history or settings restore cleanly still did something.
+            val nothingImportable =
+                rules.isEmpty() && groups.isEmpty() && history.isEmpty() && settings == null
+            val totalInvalid = invalidCount + invalidHistoryCount + invalidSettingsCount
+            val error = if (nothingImportable && totalInvalid > 0) {
+                allInvalidMessage(totalInvalid, reasons + historyReasons + settingsReasons)
             } else {
                 null
             }
 
-            // All three lists are empty whenever `error` is set, so they need no special-casing.
+            // Everything is empty/null whenever `error` is set, so they need no special-casing.
             ImportResult(
                 rules = rules,
                 groups = groups,
@@ -212,7 +240,10 @@ class RuleExporter @Inject constructor() {
                 invalidReasons = reasons,
                 history = history,
                 invalidHistoryCount = invalidHistoryCount,
-                invalidHistoryReasons = historyReasons
+                invalidHistoryReasons = historyReasons,
+                settings = settings,
+                invalidSettingsCount = invalidSettingsCount,
+                invalidSettingsReasons = settingsReasons
             )
         } catch (e: JSONException) {
             ImportResult(
@@ -272,7 +303,26 @@ class RuleExporter @Inject constructor() {
         }
         root.put("groups", groupsArray)
 
+        export.settings?.let { root.put("settings", settingsJson(it)) }
+
         return spliceHistory(root.toString(2), export.history)
+    }
+
+    /**
+     * Writes only the settings this file actually carries. A null field is OMITTED rather than
+     * written as JSON null, because absent is the format's word for "not carried, leave the
+     * importing device's own value alone" -- see [ExportedSettings].
+     */
+    private fun settingsJson(settings: ExportedSettings): JSONObject = JSONObject().apply {
+        settings.contentFilterEnabled?.let { put("contentFilterEnabled", it) }
+        settings.contentFilterMode?.let { put("contentFilterMode", it) }
+        settings.contentFilterStrictKeywords?.let { put("contentFilterStrictKeywords", it) }
+        settings.strictModeEnabled?.let { put("strictModeEnabled", it) }
+        settings.strictModeChallengeLength?.let { put("strictModeChallengeLength", it) }
+        settings.emergencyPassEnabled?.let { put("emergencyPassEnabled", it) }
+        settings.customDelayTitles?.let { put("customDelayTitles", it) }
+        settings.customDelaySubtitles?.let { put("customDelaySubtitles", it) }
+        settings.customHardBlockMessages?.let { put("customHardBlockMessages", it) }
     }
 
     /**
@@ -368,6 +418,85 @@ class RuleExporter @Inject constructor() {
     private fun JSONObject.arrayOrEmpty(key: String): JSONArray {
         if (!has(key) || isNull(key)) return JSONArray()
         return optJSONArray(key) ?: throw JSONException("\"$key\" must be an array")
+    }
+
+    /**
+     * Same contract as [arrayOrEmpty], for an object-valued key: absent or null is legitimately
+     * "none", present-but-wrong-shape means this is not a Nudge export and fails the envelope.
+     *
+     * Deliberately consistent with `rules`/`groups`/`history` rather than tolerant: a top-level key
+     * of the wrong SHAPE is evidence about the whole file, not about one entry. Failures INSIDE the
+     * object are a different matter and are isolated per key -- see [parseSettings].
+     */
+    private fun JSONObject.objectOrNull(key: String): JSONObject? {
+        if (!has(key) || isNull(key)) return null
+        return optJSONObject(key) ?: throw JSONException("\"$key\" must be an object")
+    }
+
+    /**
+     * Reads the settings block, isolating each key.
+     *
+     * A key that is ABSENT stays null, which the importer reads as "this file does not carry that
+     * setting" and leaves the device's own value alone. A key that is PRESENT but unreadable (wrong
+     * type, unknown block mode, an out-of-range challenge length) is skipped with a reason and the
+     * other eight still apply -- one bad toggle must not cost the user their custom block messages,
+     * let alone the rules in the same file (issue #20's failure shape, one level down).
+     *
+     * Returns null when the file carried no settings object at all, or when it carried one that
+     * yielded nothing usable -- both mean "do not touch this device's settings".
+     */
+    private fun parseSettings(obj: JSONObject?, onSkip: (String) -> Unit): ExportedSettings? {
+        if (obj == null) return null
+        val settings = ExportedSettings(
+            contentFilterEnabled = obj.setting("contentFilterEnabled", onSkip) { booleanValue(it) },
+            contentFilterMode = obj.setting("contentFilterMode", onSkip) { key ->
+                stringValue(key).also { mode ->
+                    require(mode in VALID_MODES) { "unknown block mode: $mode" }
+                }
+            },
+            contentFilterStrictKeywords =
+                obj.setting("contentFilterStrictKeywords", onSkip) { booleanValue(it) },
+            strictModeEnabled = obj.setting("strictModeEnabled", onSkip) { booleanValue(it) },
+            strictModeChallengeLength = obj.setting("strictModeChallengeLength", onSkip) { key ->
+                intValue(key).also { length ->
+                    // A file must not be able to install a challenge nobody can finish typing.
+                    // That is a permanent lockout, not a commitment lock, and it would break the
+                    // Strict Mode safety invariant that the challenge is ALWAYS solvable -- on a
+                    // path where the value never passed through the app's own difficulty picker.
+                    require(length in 1..StrictModeChallenge.MAX_LENGTH) {
+                        "challenge length $length is outside 1..${StrictModeChallenge.MAX_LENGTH}"
+                    }
+                }
+            },
+            emergencyPassEnabled = obj.setting("emergencyPassEnabled", onSkip) { booleanValue(it) },
+            customDelayTitles = obj.setting("customDelayTitles", onSkip) { stringValue(it) },
+            customDelaySubtitles = obj.setting("customDelaySubtitles", onSkip) { stringValue(it) },
+            customHardBlockMessages =
+                obj.setting("customHardBlockMessages", onSkip) { stringValue(it) }
+        )
+        return settings.takeIf { !it.isEmpty }
+    }
+
+    /**
+     * Reads one setting, or null when it is absent or unreadable. [read] throws the same two
+     * exception types the entry parsers throw, and they are caught here so a single bad key is a
+     * skip rather than the end of the settings block.
+     */
+    private fun <T> JSONObject.setting(
+        key: String,
+        onSkip: (String) -> Unit,
+        read: JSONObject.(String) -> T
+    ): T? {
+        if (!has(key) || isNull(key)) return null
+        return try {
+            read(key)
+        } catch (e: JSONException) {
+            onSkip("Setting \"$key\": ${e.skipReason()}")
+            null
+        } catch (e: IllegalArgumentException) {
+            onSkip("Setting \"$key\": ${e.skipReason()}")
+            null
+        }
     }
 
     private fun parseRule(obj: JSONObject): ExportedRule {
@@ -469,4 +598,17 @@ class RuleExporter @Inject constructor() {
         if (!has(key) || isNull(key)) return null
         return opt(key) as? String ?: throw JSONException("\"$key\" is not text")
     }
+
+    // --- Exact-type readers for the settings block. Same strictness as the history readers (a
+    // coerced value would be a silently WRONG setting rather than a skipped one), but their
+    // messages omit the key: `setting` already prefixes it. ---
+
+    private fun JSONObject.booleanValue(key: String): Boolean =
+        opt(key) as? Boolean ?: throw JSONException("is not true or false")
+
+    private fun JSONObject.stringValue(key: String): String =
+        opt(key) as? String ?: throw JSONException("is not text")
+
+    private fun JSONObject.intValue(key: String): Int =
+        (opt(key) as? Number)?.toInt() ?: throw JSONException("is not a number")
 }
