@@ -63,14 +63,14 @@ class ScreenTimeProvider @Inject constructor(
      * (`totalMs / sessionCount`), which the Willpower screen uses to estimate how much
      * time a walk-away actually saved.
      */
-    fun getPerAppSessionStats(dayStartMs: Long, dayEndMs: Long): Map<String, SessionStats> {
+    fun getPerAppSessionStats(rangeStartMs: Long, rangeEndMs: Long): Map<String, SessionStats> {
         return try {
             val usm = usageStatsManager ?: return emptyMap()
             val now = System.currentTimeMillis()
-            val effectiveEnd = dayEndMs.coerceAtMost(now)
-            if (dayStartMs >= effectiveEnd) return emptyMap()
+            val effectiveEnd = rangeEndMs.coerceAtMost(now)
+            if (rangeStartMs >= effectiveEnd) return emptyMap()
 
-            val events = usm.queryEvents(dayStartMs, effectiveEnd) ?: return emptyMap()
+            val events = usm.queryEvents(rangeStartMs, effectiveEnd) ?: return emptyMap()
             val event = UsageEvents.Event()
 
             val foregroundStarts = mutableMapOf<String, Long>()
@@ -100,7 +100,7 @@ class ScreenTimeProvider @Inject constructor(
             }
 
             // Only add still-open sessions if the range includes "now"
-            if (dayEndMs >= now) {
+            if (rangeEndMs >= now) {
                 for ((pkg, startTime) in foregroundStarts) {
                     record(pkg, now - startTime)
                 }
