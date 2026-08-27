@@ -2,6 +2,7 @@ package com.astraedus.nudge.service
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.os.Handler
 import android.os.Looper
@@ -169,6 +170,95 @@ class NudgeAccessibilityService : AccessibilityService() {
             return packageName == FRAMEWORK_PACKAGE ||
                 packageName in IME_PACKAGES ||
                 (currentImePackage != null && packageName == currentImePackage)
+        }
+
+        /**
+         * How long a resolved launcher set is trusted before it is re-read from PackageManager.
+         *
+         * The default home app can change (the user picks a new launcher, or installs one), and the
+         * set is only consulted when a system package is already in front, so a lazy throttled
+         * refresh costs one small binder query every few minutes at worst. A stale set degrades to
+         * the OLD behaviour (passthrough simply isn't cleared) — never to a false "user left".
+         */
+        private const val LAUNCHER_REFRESH_MS = 5 * 60_000L
+
+        /**
+         * Packages that answer a `CATEGORY_HOME` query but are NOT the user's home screen, and must
+         * never be read as "the user left the app".
+         *
+         * `com.android.settings` is the load-bearing one: AOSP declares `Settings$FallbackHome`
+         * with `CATEGORY_HOME` + `CATEGORY_DEFAULT` (it is the placeholder home shown before the
+         * user unlocks after a reboot), so a plain `queryIntentActivities` DOES return Settings on a
+         * stock device. Treating Settings as home would clear passthrough for every permission /
+         * settings excursion. The rest are defence in depth against an OEM declaring a home filter
+         * on a system-surface package.
+         */
+        private val NEVER_LAUNCHER_PACKAGES = setOf(
+            "com.android.settings",
+            "com.android.systemui",
+            "com.android.packageinstaller",
+            "com.android.permissioncontroller",
+        )
+
+        /**
+         * Filter a raw `CATEGORY_HOME` resolution down to packages that may legitimately be treated
+         * as the home screen. Pure so the exclusions are unit-tested rather than eyeballed.
+         *
+         * Drops blanks, our own package, the [FRAMEWORK_PACKAGE] (an unset default home resolves to
+         * the framework's chooser/ResolverActivity), every [NEVER_LAUNCHER_PACKAGES] entry, and any
+         * IME (a keyboard is the canonical "surfaced without the user leaving" window — it must
+         * never end up in this set by any route).
+         */
+        internal fun sanitizeLauncherPackages(
+            resolved: Collection<String?>,
+            ownPackageName: String
+        ): Set<String> = resolved.asSequence().filterNotNull().filterTo(mutableSetOf()) { candidate ->
+            candidate.isNotBlank() &&
+                candidate != ownPackageName &&
+                candidate != FRAMEWORK_PACKAGE &&
+                candidate !in NEVER_LAUNCHER_PACKAGES &&
+                candidate !in IME_PACKAGES
+        }
+
+        /**
+         * True when this event means the user went HOME — i.e. genuinely left whatever app they were
+         * in — and any post-overlay passthrough for that app must therefore be dropped.
+         *
+         * The bug this exists for: [SYSTEM_PACKAGES] contains the stock launchers, and the
+         * `SYSTEM_PACKAGES` early-return in [onAccessibilityEvent] fires long before
+         * [evaluateForegroundPackage] reaches `PassthroughManager.clearIfAppChanged`. So completing a
+         * delay for app X, pressing Home and re-opening X skipped the delay — indefinitely, and only
+         * opening some OTHER non-system app in between re-armed it. That is the most common exit
+         * path there is, so the delay was effectively one-shot per app.
+         *
+         * The launcher must be distinguished from the rest of [SYSTEM_PACKAGES] rather than clearing
+         * for all of them: the notification shade / SystemUI, the IME, a permission dialog and our
+         * own overlay all foreground briefly WITHOUT the user leaving the app, and clearing on those
+         * would re-delay a user for pulling the shade — a worse bug than the one being fixed. The
+         * allowlist direction is deliberate: an unresolvable or stale launcher set clears nothing and
+         * behaves exactly as this service did before.
+         *
+         * Restricted to `TYPE_WINDOW_STATE_CHANGED`, for the same reason
+         * [isOverlayBypassedByForeground] is: that is the only event type that means "a new activity
+         * is in front". Launcher content-change churn (widgets, wallpaper, the icon grid redrawing
+         * behind a fullscreen app) is not evidence that anything came forward.
+         *
+         * Note a launcher that is NOT in [SYSTEM_PACKAGES] (a third-party one like Nova) already
+         * worked: those events fall through to [evaluateForegroundPackage], which clears passthrough
+         * via the normal app-switch path. This restores parity for the stock launchers.
+         */
+        internal fun isHomeScreenForeground(
+            eventType: Int,
+            packageName: String,
+            launcherPackages: Set<String>,
+            ownPackageName: String,
+            currentImePackage: String?
+        ): Boolean {
+            if (eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return false
+            if (packageName.isBlank()) return false
+            if (packageName == ownPackageName) return false
+            if (isTransientNonAppPackage(packageName, currentImePackage)) return false
+            return packageName in launcherPackages
         }
 
         /**
@@ -360,6 +450,20 @@ class NudgeAccessibilityService : AccessibilityService() {
     @Volatile private var currentImePackage: String? = null
 
     /**
+     * Packages that count as the HOME SCREEN, resolved from PackageManager (`CATEGORY_HOME`) rather
+     * than hardcoded, because the default launcher is user-choosable and OEM-specific. Cached like
+     * the other hot-path flags so [onAccessibilityEvent] answers "did the user go home?" with a set
+     * lookup and no binder call; refreshed lazily by [refreshLauncherPackagesIfStale].
+     *
+     * Empty until resolved (and on any failure), which degrades to the pre-fix behaviour: nothing is
+     * treated as home, so nothing is cleared.
+     */
+    @Volatile private var launcherPackagesCached: Set<String> = emptySet()
+
+    /** Main-thread only: when [launcherPackagesCached] was last read from PackageManager. */
+    private var lastLauncherResolveTime: Long = 0L
+
+    /**
      * Packages we have already shown the picture-in-picture escape explainer for (issue #19), cached
      * off-main from DataStore exactly like the Strict Mode / global-enabled flags so the hot path can
      * check "have we already explained this app?" synchronously.
@@ -484,6 +588,84 @@ class NudgeAccessibilityService : AccessibilityService() {
         applicationContext.startActivity(intent)
     }
 
+    /**
+     * Did this system-package event mean the user went to the home screen?
+     *
+     * The cheap event-type test runs FIRST so launcher/SystemUI content-change churn never reaches
+     * the staleness check, let alone PackageManager. [isHomeScreenForeground] re-checks the event
+     * type so the decision stays self-contained and unit-testable.
+     */
+    private fun wentHome(eventType: Int, packageName: String): Boolean {
+        if (eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return false
+        refreshLauncherPackagesIfStale(System.currentTimeMillis())
+        return isHomeScreenForeground(
+            eventType = eventType,
+            packageName = packageName,
+            launcherPackages = launcherPackagesCached,
+            ownPackageName = applicationContext.packageName,
+            currentImePackage = currentImePackage
+        )
+    }
+
+    /**
+     * Re-read the home-screen packages if the cached set is older than [LAUNCHER_REFRESH_MS].
+     *
+     * Called only from the system-package branch of [onAccessibilityEvent] and only for a genuine
+     * foreground change, so the steady-state cost inside an app is zero and the worst case is one
+     * small `queryIntentActivities` every five minutes.
+     */
+    private fun refreshLauncherPackagesIfStale(now: Long) {
+        if (now - lastLauncherResolveTime < LAUNCHER_REFRESH_MS) return
+        lastLauncherResolveTime = now
+        launcherPackagesCached = resolveLauncherPackages()
+    }
+
+    /**
+     * Ask PackageManager which packages can act as the home screen: the CURRENT default first (the
+     * one Home actually goes to), plus every installed home-capable app so switching launchers is
+     * covered between refreshes. `QUERY_ALL_PACKAGES` in the manifest makes the query complete on
+     * API 30+.
+     *
+     * Fails soft to an empty set — an unresolvable launcher means "we cannot tell when the user goes
+     * home", which is exactly how this service behaved before, not a licence to guess.
+     */
+    private fun resolveLauncherPackages(): Set<String> = try {
+        val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        val candidates = mutableListOf<String?>()
+        candidates += packageManager
+            .resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            ?.activityInfo?.packageName
+        packageManager
+            .queryIntentActivities(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+            .mapTo(candidates) { it.activityInfo?.packageName }
+        sanitizeLauncherPackages(candidates, applicationContext.packageName).also {
+            entryPoint.nudgeLogger().d("launcher packages resolved packages=$it")
+        }
+    } catch (e: Exception) {
+        entryPoint.nudgeLogger().w("failed to resolve launcher packages", e)
+        emptySet()
+    }
+
+    /**
+     * The user pressed Home: drop the post-overlay passthrough (and the web-domain equivalent) for
+     * whatever app they were in, so re-opening it gets a fresh block.
+     *
+     * Deliberately touches NOTHING else. Session counts, the auto-kick cooldown and the interaction
+     * tracker's 5-minute session-expiry semantics all treat a quick trip home as the SAME sitting on
+     * purpose (a tab-out-and-back must not refill a time budget), and that stays true — leaving the
+     * app revokes permission to skip the delay, it does not end the session.
+     */
+    private fun clearPassthroughForHome(packageName: String) {
+        val passthrough = entryPoint.passthroughManager()
+        if (passthrough.clearIfAppChanged(packageName)) {
+            entryPoint.nudgeLogger().d("passthrough cleared on home screen package=$packageName")
+        }
+        // Same "the user left" semantics for the web passthrough: lastBlockedDomain is otherwise
+        // only cleared inside evaluateForegroundPackage, which the system-package return skips, so a
+        // completed web delay survived Home exactly as the app-level one did.
+        lastBlockedDomain = null
+    }
+
     private fun refreshCurrentImePackage() {
         currentImePackage = try {
             Settings.Secure.getString(
@@ -558,6 +740,10 @@ class NudgeAccessibilityService : AccessibilityService() {
         // Track the active keyboard so its window events are recognised as transient (issue #5),
         // and keep it fresh if the user switches keyboards.
         refreshCurrentImePackage()
+
+        // Which packages are the home screen — needed to tell "the user went home" (clears
+        // passthrough) apart from the rest of SYSTEM_PACKAGES (transient, must not clear).
+        refreshLauncherPackagesIfStale(System.currentTimeMillis())
         try {
             contentResolver.registerContentObserver(
                 Settings.Secure.getUriFor(Settings.Secure.DEFAULT_INPUT_METHOD),
@@ -688,6 +874,10 @@ class NudgeAccessibilityService : AccessibilityService() {
         }
 
         if (packageName in SYSTEM_PACKAGES) {
+            // Going HOME is the user genuinely leaving the app — and it is the exit path this
+            // early-return used to swallow, so a completed delay never re-armed for it. Every other
+            // system surface (shade, permission dialog, installer) is transient and must NOT clear.
+            if (wentHome(event.eventType, packageName)) clearPassthroughForHome(packageName)
             clearOverlays(packageName, "system_package")
             return
         }
