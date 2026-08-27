@@ -162,14 +162,35 @@ class ActiveRulesViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Writes the previewed import.
+     *
+     * A backup carries the user's app SETTINGS as well as their rules, so an import can WEAKEN
+     * protection — a hand-edited `"strictModeEnabled": false` would otherwise be a one-tap way out
+     * of the commitment lock. When it does, the whole import goes through the same
+     * [StrictModeGate] every other weakening action uses (see [toggleAppEnabled]).
+     *
+     * The WHOLE import is gated, not just the settings step: a half-applied restore (rules in,
+     * settings out) is a state the user's backup never described, and gating everything is the
+     * fail-closed reading. Rules-only and history-only files never weaken anything, so the common
+     * case is untouched, as is every file written before settings existed.
+     *
+     * The confirmation dialog is dismissed up front, so the challenge dialog does not stack on top
+     * of it; cancelling the challenge leaves the device exactly as it was.
+     */
     fun confirmImport() {
         val preview = _uiState.value.importPreview ?: return
+        _uiState.value = _uiState.value.copy(importPreview = null)
         viewModelScope.launch {
-            val outcome = importRulesUseCase.execute(preview.result)
-            _uiState.value = _uiState.value.copy(
-                importOutcome = outcome,
-                importPreview = null
-            )
+            val write: suspend () -> Unit = {
+                val outcome = importRulesUseCase.execute(preview.result)
+                _uiState.value = _uiState.value.copy(importOutcome = outcome)
+            }
+            if (importRulesUseCase.weakensProtection(preview.result)) {
+                strictModeGate.run(prompt = "Import settings that reduce protection", action = write)
+            } else {
+                write()
+            }
         }
     }
 

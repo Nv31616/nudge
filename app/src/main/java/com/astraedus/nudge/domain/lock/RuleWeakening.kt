@@ -19,8 +19,12 @@ object RuleWeakening {
      * NONE is listed explicitly rather than left to the fallback: it is a real, user-selectable
      * mode meaning "this rule gates nothing", so switching a blocking rule to it is the single
      * biggest weakening available in this editor and must be caught by Strict Mode.
+     *
+     * `internal` rather than private because [ImportedSettingsWeakening] ranks the CONTENT FILTER's
+     * mode with the same ladder — it is the same [com.astraedus.nudge.domain.model.BlockMode], so a
+     * second copy of this `when` could only ever drift from this one.
      */
-    private fun modeStrength(mode: String?): Int = when (mode) {
+    internal fun modeStrength(mode: String?): Int = when (mode) {
         "HARD_BLOCK" -> 3
         "DELAY" -> 2
         "BREATHING" -> 1

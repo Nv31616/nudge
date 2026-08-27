@@ -34,11 +34,22 @@ fun buildImportPreviewMessage(preview: ImportPreview): String = buildString {
         append(" and will be left out:")
         appendReasons(result.invalidReasons)
     }
+    if (result.settings != null) {
+        // Warned BEFORE anything is written, because unlike rules and history this REPLACES what
+        // is already on the device: custom block messages, the content filter, Strict Mode.
+        append("\n\nAlso restores app settings, replacing this device's.")
+    }
     if (result.invalidHistoryCount > 0) {
         append("\n\n")
         append(historyEntriesCouldNotBeRead(result.invalidHistoryCount))
         append(" and will be left out:")
         appendReasons(result.invalidHistoryReasons)
+    }
+    if (result.invalidSettingsCount > 0) {
+        append("\n\n")
+        append(settingsCouldNotBeRead(result.invalidSettingsCount))
+        append(" and will be left out:")
+        appendReasons(result.invalidSettingsReasons)
     }
 }
 
@@ -55,6 +66,10 @@ fun buildImportOutcomeMessage(outcome: ImportOutcome): String = buildString {
         if (outcome.historyInvalidCount > 0) {
             append("\nHistory could not be read: ${outcome.historyInvalidCount}")
         }
+    }
+    if (outcome.settingsApplied) append("\n\nApp settings restored")
+    if (outcome.settingsInvalidCount > 0) {
+        append("\nSettings that could not be read: ${outcome.settingsInvalidCount}")
     }
     if (outcome.invalidCount > 0) {
         append("\n\nSkipped (could not be read): ${outcome.invalidCount}")
@@ -81,3 +96,6 @@ private fun entriesCouldNotBeRead(count: Int): String =
 private fun historyEntriesCouldNotBeRead(count: Int): String =
     if (count == 1) "1 history event could not be read"
     else "$count history events could not be read"
+
+private fun settingsCouldNotBeRead(count: Int): String =
+    if (count == 1) "1 setting could not be read" else "$count settings could not be read"

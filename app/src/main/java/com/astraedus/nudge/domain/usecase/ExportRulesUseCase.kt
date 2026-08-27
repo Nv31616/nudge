@@ -1,6 +1,7 @@
 package com.astraedus.nudge.domain.usecase
 
 import com.astraedus.nudge.data.export.RuleExporter
+import com.astraedus.nudge.data.preferences.NudgePreferences
 import com.astraedus.nudge.data.repository.BlockRuleRepository
 import com.astraedus.nudge.data.repository.UsageRepository
 import kotlinx.coroutines.Dispatchers
@@ -11,11 +12,13 @@ import javax.inject.Inject
 class ExportRulesUseCase @Inject constructor(
     private val repository: BlockRuleRepository,
     private val usageRepository: UsageRepository,
+    private val preferences: NudgePreferences,
     private val exporter: RuleExporter
 ) {
 
     /**
-     * Exports all enabled rules, their groups, and the FULL block/walk-away history to JSON.
+     * Exports all enabled rules, their groups, the FULL block/walk-away history and the user's app
+     * settings to JSON.
      *
      * History is always included and has no toggle: it is the thing that makes the dashboard tiles
      * and both insight pages survive a device move, and an opt-in nobody finds is a backup nobody
@@ -37,6 +40,11 @@ class ExportRulesUseCase @Inject constructor(
 
         val history = usageRepository.getAllEventsForExport()
 
-        exporter.exportRules(rules, groups, groupMembers, history)
+        // Settings ride along for the same reason history does: a backup that restores a user's
+        // rules but not their custom block messages or their Strict Mode difficulty has not
+        // actually restored their Nudge. Device-local state is excluded -- see [ExportedSettings].
+        val settings = preferences.exportableSettings()
+
+        exporter.exportRules(rules, groups, groupMembers, history, settings)
     }
 }

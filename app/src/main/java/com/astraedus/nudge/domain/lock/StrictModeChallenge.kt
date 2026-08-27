@@ -31,6 +31,17 @@ object StrictModeChallenge {
     const val DEFAULT_LENGTH = LENGTH_MEDIUM
 
     /**
+     * Largest difficulty that may be accepted from OUTSIDE the app's own difficulty picker — today,
+     * from an imported backup file.
+     *
+     * Strict Mode's safety invariant is that the challenge is always solvable; a value the UI can
+     * never produce (a hand-edited file asking for 100,000 characters) would turn the commitment
+     * lock into a permanent lockout with no way back. The bound is the hardest difficulty the app
+     * itself offers, so nothing a real user configured is ever rejected.
+     */
+    const val MAX_LENGTH = LENGTH_HARD
+
+    /**
      * Generates a fresh random challenge string of [length] raw characters drawn from [CHARSET].
      * Returns the RAW string (no dashes); use [forDisplay] to render it grouped.
      *

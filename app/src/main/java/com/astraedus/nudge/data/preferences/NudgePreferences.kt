@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.astraedus.nudge.data.export.ExportedSettings
 import com.astraedus.nudge.service.GlobalEnabledProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -226,6 +227,60 @@ class NudgePreferences @Inject constructor(
             prefs[Keys.PIP_ESCAPE_PROMPTED] = com.astraedus.nudge.domain.pip.PipEscapeLedger.serialize(
                 com.astraedus.nudge.domain.pip.PipEscapeLedger.record(current, packageName)
             )
+        }
+    }
+
+    // --- Backup: the settings an export file carries (see [ExportedSettings]) ---------------
+
+    /**
+     * The current value of every setting a backup carries.
+     *
+     * Read through the public Flows above rather than off one raw `Preferences` snapshot, on
+     * purpose: those Flows are where each setting's DEFAULT lives, and a second hand-written copy
+     * of "`emergencyPassEnabled` defaults to true" here would eventually disagree with them —
+     * exporting a value the app never actually used. Nine cached reads on a user-initiated,
+     * already-off-main export is a trade worth making for that.
+     */
+    suspend fun exportableSettings(): ExportedSettings = ExportedSettings(
+        contentFilterEnabled = contentFilterEnabled.first(),
+        contentFilterMode = contentFilterMode.first(),
+        contentFilterStrictKeywords = contentFilterStrictKeywords.first(),
+        strictModeEnabled = isStrictModeEnabled.first(),
+        strictModeChallengeLength = strictModeChallengeLength.first(),
+        emergencyPassEnabled = emergencyPassEnabled.first(),
+        customDelayTitles = customDelayTitles.first(),
+        customDelaySubtitles = customDelaySubtitles.first(),
+        customHardBlockMessages = customHardBlockMessages.first()
+    )
+
+    /**
+     * Applies an imported backup's settings.
+     *
+     * ALL-OR-NOTHING: every key is written inside ONE `edit` block, which DataStore commits as a
+     * single transaction. A half-applied restore is the shape to avoid here — landing
+     * `strictModeEnabled = false` but not the challenge length that came with it leaves the user in
+     * a state their backup never described, on the app's protection settings.
+     *
+     * A null field is SKIPPED, not written: the file does not carry that setting, so this device's
+     * own value stands. That is what lets a backup from a future Nudge (or a hand-edited partial
+     * file) restore what it does carry without blanking what it does not.
+     */
+    suspend fun applyImportedSettings(settings: ExportedSettings) {
+        if (settings.isEmpty) return
+        context.dataStore.edit { prefs ->
+            settings.contentFilterEnabled?.let { prefs[Keys.CONTENT_FILTER_ENABLED] = it }
+            settings.contentFilterMode?.let { prefs[Keys.CONTENT_FILTER_MODE] = it }
+            settings.contentFilterStrictKeywords?.let {
+                prefs[Keys.CONTENT_FILTER_STRICT_KEYWORDS] = it
+            }
+            settings.strictModeEnabled?.let { prefs[Keys.STRICT_MODE_ENABLED] = it }
+            settings.strictModeChallengeLength?.let {
+                prefs[Keys.STRICT_MODE_CHALLENGE_LENGTH] = it
+            }
+            settings.emergencyPassEnabled?.let { prefs[Keys.EMERGENCY_PASS_ENABLED] = it }
+            settings.customDelayTitles?.let { prefs[Keys.CUSTOM_DELAY_TITLES] = it }
+            settings.customDelaySubtitles?.let { prefs[Keys.CUSTOM_DELAY_SUBTITLES] = it }
+            settings.customHardBlockMessages?.let { prefs[Keys.CUSTOM_HARD_BLOCK_MESSAGES] = it }
         }
     }
 }
