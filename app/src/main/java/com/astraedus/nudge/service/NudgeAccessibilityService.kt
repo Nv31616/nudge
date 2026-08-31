@@ -1197,6 +1197,24 @@ class NudgeAccessibilityService : AccessibilityService() {
     }
 
     private fun handleWindowContentChanged(packageName: String, event: AccessibilityEvent) {
+        if (packageName in READING_PACKAGES) {
+            val now = System.currentTimeMillis()
+            val lastTime = lastContentChangedTime[packageName] ?: 0L
+            if ((now - lastTime) < contentChangedDebounceMs) return
+        lastContentChangedTime[packageName] = now
+
+    serviceScope.launch {
+        val globalEnabled = entryPoint.nudgePreferences().isGlobalEnabled.first()
+        if (!globalEnabled) return@launch
+        val text = withContext(Dispatchers.Main) { harvestWindowText() }
+        if (text.isBlank()) return@launch
+        val result = entryPoint.evaluateBlockUseCase().evaluateScreenText(text)
+        if (result.decision is BlockDecision.Block) {
+            handleDecision(result.decision, result.trackingPackage ?: packageName)
+        }
+    }
+    return
+}
         // For browsers, content changes may indicate URL navigation -- re-evaluate web domain
         if (entryPoint.webDomainDetector().isBrowser(packageName)) {
             val now = System.currentTimeMillis()
