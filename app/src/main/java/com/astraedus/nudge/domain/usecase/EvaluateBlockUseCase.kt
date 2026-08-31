@@ -190,6 +190,36 @@ class EvaluateBlockUseCase @Inject constructor(
         return WebDomainBlockResult(decision, trackingPackage)
     }
 
+suspend fun evaluateScreenText(screenText: String): WebDomainBlockResult {
+    if (!preferences.contentFilterEnabled.first()) {
+        return WebDomainBlockResult(BlockDecision.Allow, null)
+    }
+    val strict = preferences.contentFilterStrictKeywords.first()
+    if (!contentFilter.isBlocked(screenText, strict)) {
+        return WebDomainBlockResult(BlockDecision.Allow, null)
+    }
+    val mode = try {
+        BlockMode.valueOf(preferences.contentFilterMode.first())
+    } catch (_: Exception) { BlockMode.HARD_BLOCK }
+
+    val trackingPackage = "reading"
+    val activeRule = ActiveRule(
+        mode = mode,
+        delaySeconds = CONTENT_FILTER_DELAY_SECONDS,
+        dailyLimitMinutes = null,
+        enabled = true,
+        inAppFeatures = null,
+        grayscale = false,
+        ruleName = "Restricted content"
+    )
+    val decision = blockEngine.evaluate(
+        packageName = trackingPackage,
+        activeRules = listOf(activeRule),
+        dailyUsageMs = 0L
+    )
+    return WebDomainBlockResult(decision, trackingPackage)
+}
+
     /**
      * Today's foreground time for [packageName], the number the daily budget is spent against.
      *
