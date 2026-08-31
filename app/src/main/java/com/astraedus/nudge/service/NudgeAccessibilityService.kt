@@ -135,6 +135,11 @@ class NudgeAccessibilityService : AccessibilityService() {
             "com.samsung.android.launcher",
         )
 
+        val READING_PACKAGES = setOf(
+            "com.amazon.kindle",
+            "com.google.android.apps.books"
+        )
+        
         /** The `android` framework package: hosts toasts, transient dialogs, and — the important
          *  one for issue #5 — the floating text-selection / paste toolbar and long-press popups. */
         const val FRAMEWORK_PACKAGE = "android"
