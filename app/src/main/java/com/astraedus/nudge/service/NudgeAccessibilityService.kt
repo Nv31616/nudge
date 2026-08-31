@@ -137,7 +137,10 @@ class NudgeAccessibilityService : AccessibilityService() {
 
         val READING_PACKAGES = setOf(
             "com.amazon.kindle",
-            "com.google.android.apps.books"
+            "com.google.android.apps.books",
+            "com.google.android.apps.pdfviewer",   // Google PDF Viewer
+            "com.google.android.apps.docs",        // Google Drive (also opens PDFs inside it)
+            "com.microsoft.skydrive"               // OneDrive
         )
         
         /** The `android` framework package: hosts toasts, transient dialogs, and — the important
